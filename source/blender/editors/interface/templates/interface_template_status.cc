@@ -22,6 +22,7 @@
 #include "BLI_math_vector.h"
 #include "BLI_rect.h"
 #include "BLI_string.h"
+#include "BLI_build_config.h"
 
 #include "BLF_api.hh"
 #include "BLT_translation.hh"
@@ -422,6 +423,7 @@ void uiTemplateStatusInfo(Layout *layout, bContext *C)
     has_status_info = true;
   }
 
+#ifndef OS_IOS
   if (U.statusbar_flag & STATUSBAR_SHOW_EXTENSIONS_UPDATES) {
     wmWindowManager *wm = CTX_wm_manager(C);
 
@@ -498,6 +500,7 @@ void uiTemplateStatusInfo(Layout *layout, bContext *C)
       has_status_info = true;
     }
   }
+#endif /* !OS_IOS */
 
   if (!BKE_main_has_issues(bmain)) {
     if (U.statusbar_flag & STATUSBAR_SHOW_VERSION) {
@@ -561,7 +564,7 @@ void uiTemplateStatusInfo(Layout *layout, bContext *C)
                          0.0f,
                          0.0f,
                          "");
-  /*# ButtonType::Roundbox's background color is set in `but->col`. */
+  /* #ButtonType::Roundbox's background color is set in `but->col`. */
   theme::get_color_4ubv(TH_WARNING, but->col);
 
   if (!warning_message.empty()) {

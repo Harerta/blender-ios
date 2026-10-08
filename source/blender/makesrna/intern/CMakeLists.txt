@@ -228,6 +228,7 @@ set(SRC
   ${DEFSRC}
   ${APISRC}
   ../../../../intern/clog/clog.cc
+  ../../makesdna/intern/dna_parse.cc
 
   makesrna_utils.hh
 )
@@ -251,6 +252,7 @@ set(INC
   ../../imbuf
   ../../imbuf/movie
   ../../io/usd
+  ../../makesdna/intern
   ../../modifiers
   ../../nodes
   ../../nodes/composite/include
@@ -267,9 +269,10 @@ set(INC
   ../../../../intern/memutil
   ../../../../intern/mantaflow/extern
 
-
   # RNA_prototypes.hh
   ${CMAKE_CURRENT_BINARY_DIR}/../../makesrna/
+  # dna_includes_as_strings.h
+  ${CMAKE_BINARY_DIR}/source/blender/makesdna
 )
 
 set(INC_SYS
@@ -284,10 +287,6 @@ if(WITH_PYTHON)
   list(APPEND INC
     ../../python
   )
-endif()
-
-if(WITH_IMAGE_OPENEXR)
-  add_definitions(-DWITH_IMAGE_OPENEXR)
 endif()
 
 if(WITH_IMAGE_OPENJPEG)
@@ -399,22 +398,25 @@ if(WITH_GMP)
 endif()
 
 # Build `makesrna` executable.
-add_c_and_cxx_flags_custom_test(makesrna)
+if(NOT WITH_CROSSCOMPILED_TOOLS)
+  add_c_and_cxx_flags_custom_test(makesrna)
 
-add_executable(makesrna ${SRC} ${SRC_RNA_INC} ${SRC_DNA_INC})
-setup_platform_linker_flags(makesrna)
-setup_platform_linker_libs(makesrna)
-blender_target_include_dirs(makesrna ${INC})
-blender_target_include_dirs_sys(makesrna ${INC_SYS})
+  add_executable(makesrna ${SRC} ${SRC_RNA_INC} ${SRC_DNA_INC})
+  setup_platform_linker_flags(makesrna)
+  setup_platform_linker_libs(makesrna)
+  blender_target_include_dirs(makesrna ${INC})
+  blender_target_include_dirs_sys(makesrna ${INC_SYS})
 
 target_link_libraries(makesrna PRIVATE bf_dna)
 target_link_libraries(makesrna PRIVATE bf::intern::atomic)
 target_link_libraries(makesrna PRIVATE bf::intern::guardedalloc)
 target_link_libraries(makesrna PRIVATE bf_dna_blenlib)
 target_link_libraries(makesrna PRIVATE bf_dna_defaults)
+target_link_libraries(makesrna PRIVATE bf::dependencies::optional::openvdb)
 target_link_libraries(makesrna PRIVATE bf::dependencies::optional::tbb)
 target_link_libraries(makesrna PRIVATE bf::dependencies::pthreads)
 target_link_libraries(makesrna PRIVATE bf::dependencies::fmt)
+endif()
 
 # Output `rna_*_gen.cc`.
 # NOTE: (Linux only): with crashes try add this after COMMAND:
@@ -423,7 +425,7 @@ add_custom_command(
   OUTPUT ${GENSRC}
   COMMAND
     ${CMAKE_COMMAND} -E env ${PLATFORM_ENV_BUILD}
-    "$<TARGET_FILE:makesrna>" ${CMAKE_CURRENT_BINARY_DIR}/ ${CMAKE_CURRENT_BINARY_DIR}/../
+    "$<TARGET_FILE:makesrna>" ${CMAKE_SOURCE_DIR}/source/blender/makesdna/ ${CMAKE_CURRENT_BINARY_DIR}/ ${CMAKE_CURRENT_BINARY_DIR}/../
   DEPENDS makesrna
 )
 
@@ -473,6 +475,7 @@ set(LIB
   PRIVATE bf::dependencies::optional::tbb
   PRIVATE bf::dependencies::optional::audaspace
   PUBLIC bf::dependencies::fmt
+  PRIVATE bf::nodes::shader
 )
 
 blender_add_lib(bf_rna "${SRC}" "${INC}" "${INC_SYS}" "${LIB}")

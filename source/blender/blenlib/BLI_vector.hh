@@ -112,6 +112,13 @@ class Vector {
 #  define UPDATE_VECTOR_SIZE(ptr) (ptr)->debug_size_ = int64_t((ptr)->end_ - (ptr)->begin_)
 #else
 #  define UPDATE_VECTOR_SIZE(ptr) ((void)0)
+#  if defined(WITH_APPLE_CROSSPLATFORM) || defined(WITH_CROSSCOMPILED_TOOLS)
+  /* TODO(iOS IOS-001): Blender and the cross-compiled host tools must agree on the size of a
+   * Vector or unpacking RNA packets (e.g. in rna_ui_gen.cc) will corrupt data. Force the debug
+   * size field on in both host and target builds. A better fix would be to build the host tools
+   * with the same build type (Release/Debug) as the target. See doc/ios/known_issues.md. */
+  int64_t debug_size_;
+#  endif
 #endif
 
   /**

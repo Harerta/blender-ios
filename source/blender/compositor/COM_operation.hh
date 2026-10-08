@@ -114,14 +114,12 @@ class Operation {
    * output results. */
   virtual void execute() = 0;
 
-  /* Compute and set a preview of the operation if needed. This method defaults to an empty
-   * implementation and should be implemented by operations which can have previews. */
-  virtual void compute_preview();
+  /* Log the data of the operation into the context logger. */
+  virtual void log_data();
 
-  /* Add the given result to the results_ map identified by the given output identifier. This
-   * should be called during operation construction for all outputs. The provided result shouldn't
-   * be allocated or initialized, this will happen later during execution. */
-  void populate_result(StringRef identifier, Result result);
+  /* Add a new result with the given type to the results_ map identified by the given output
+   * identifier. This should be called during operation construction for all outputs. */
+  void populate_result(StringRef identifier, ResultType type);
 
   /* Declare the descriptor of the input identified by the given identifier to be the given
    * descriptor. Adds the given descriptor to the input_descriptors_ map identified by the given
@@ -144,7 +142,8 @@ class Operation {
    *   mapped to the input if no previous processors exists.
    * - Switch the result mapped to the input to be the output result of the processor.
    * - Evaluate the processor. */
-  void add_and_evaluate_input_processor(StringRef identifier, SimpleOperation *processor);
+  void add_and_evaluate_input_processor(StringRef identifier,
+                                        std::unique_ptr<SimpleOperation> processor);
 
   /* Release the results that are mapped to the inputs of the operation. This is called after the
    * evaluation of the operation to declare that the results are no longer needed by this

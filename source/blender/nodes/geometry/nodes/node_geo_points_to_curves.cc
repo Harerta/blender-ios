@@ -23,19 +23,21 @@ namespace blender::nodes::node_geo_points_to_curves_cc {
 
 static void node_declare(NodeDeclarationBuilder &b)
 {
-  b.add_input<decl::Geometry>("Points")
+  b.add_input<decl::Geometry>("Points"_ustr)
       .supported_type(GeometryComponent::Type::PointCloud)
       .description("Points to generate curves from");
-  b.add_input<decl::Int>("Curve Group ID")
-      .field_on_all()
+  b.add_input<decl::Int>("Curve Group ID"_ustr)
+      .evaluated_geometry_field()
       .hide_value()
       .description(
           "A curve is created for every distinct group ID. All points with the same ID are put "
           "into the same curve");
-  b.add_input<decl::Float>("Weight").field_on_all().hide_value().description(
-      "Determines the order of points in each curve");
+  b.add_input<decl::Float>("Weight"_ustr)
+      .evaluated_geometry_field()
+      .hide_value()
+      .description("Determines the order of points in each curve");
 
-  b.add_output<decl::Geometry>("Curves").propagate_all();
+  b.add_output<decl::Geometry>("Curves"_ustr).propagate_all_geometry();
 }
 
 static void grouped_sort(const OffsetIndices<int> offsets,
@@ -61,13 +63,13 @@ static void grouped_sort(const OffsetIndices<int> offsets,
 }
 
 static void find_points_by_group_index(const Span<int> indices_of_curves,
+                                       const bool sort,
                                        MutableSpan<int> r_offsets,
                                        MutableSpan<int> r_indices)
 {
   const OffsetIndices offsets = offset_indices::build_reverse_offsets(indices_of_curves,
                                                                       r_offsets);
-  /* Sorting is implemented by the caller. */
-  offset_indices::reverse_indices_in_groups(indices_of_curves, offsets, r_indices, false);
+  offset_indices::reverse_indices_in_groups(indices_of_curves, offsets, r_indices, sort);
 }
 
 static int identifiers_to_indices(MutableSpan<int> r_identifiers_to_indices)
@@ -147,12 +149,16 @@ static Curves *curves_from_points(const PointCloud &points,
   offset.fill(0);
 
   Array<int> indices(domain_size);
-  find_points_by_group_index(group_ids, offset, indices.as_mutable_span());
 
-  if (!weights_varray.is_single()) {
+  /* If the weights are specified, use them to sort the points, otherwise use the default sorting
+   * implemented by #offset_indices::reverse_indices_in_groups. */
+  const bool sort_by_weight = !weights_varray.is_single();
+  find_points_by_group_index(group_ids, !sort_by_weight, offset, indices.as_mutable_span());
+  if (sort_by_weight) {
     const VArraySpan<float> weights(weights_varray);
     grouped_sort(OffsetIndices<int>(offset), weights, indices);
   }
+
   bke::gather_attributes(points.attributes(),
                          AttrDomain::Point,
                          AttrDomain::Point,
@@ -188,7 +194,7 @@ static void node_register()
 {
   static bke::bNodeType ntype;
 
-  geo_node_type_base(&ntype, "GeometryNodePointsToCurves", GEO_NODE_POINTS_TO_CURVES);
+  geo_node_type_base(&ntype, "GeometryNodePointsToCurves"_ustr, GEO_NODE_POINTS_TO_CURVES);
   ntype.ui_name = "Points to Curves";
   ntype.ui_description = "Split all points to curve by its group ID and reorder by weight";
   ntype.enum_name_legacy = "POINTS_TO_CURVES";

@@ -8,6 +8,7 @@ set(INC
   gizmo/intern
   ../compositor
   ../editors/include
+  ../editors/interface
   ../gpu
   ../makesrna
   ../../../intern/memutil
@@ -105,6 +106,7 @@ set(LIB
   PRIVATE bf::imbuf::movie
   PRIVATE bf::intern::clog
   PRIVATE bf::intern::guardedalloc
+  PRIVATE bf::intern::profile
   PRIVATE bf::animrig
   PRIVATE bf::nodes
   PRIVATE bf::render
@@ -147,6 +149,13 @@ if(WITH_GHOST_CSD)
     intern/wm_window_csd_layout.cc
   )
   add_definitions(-DWITH_GHOST_CSD)
+endif()
+
+if(WITH_APPLE_CROSSPLATFORM)
+  list(APPEND SRC
+    intern/wm_ios_bridge.cc
+    wm_ios_bridge.h
+  )
 endif()
 
 if(WITH_CYCLES)
@@ -195,6 +204,7 @@ if(WITH_XR_OPENXR)
     xr/intern/wm_xr_action.cc
     xr/intern/wm_xr_actionmap.cc
     xr/intern/wm_xr_draw.cc
+    xr/intern/wm_xr_location_scouting.cc
     xr/intern/wm_xr_operators.cc
     xr/intern/wm_xr_session.cc
 

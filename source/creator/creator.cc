@@ -121,6 +121,14 @@ char **environ = nullptr;
 
 BLI_STATIC_ASSERT(ENDIAN_ORDER == L_ENDIAN, "Blender only builds on little endian systems")
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+namespace blender {
+void WM_main_entry(bContext *C);
+}
+int GHOST_iosmain(int argc, const char **argv);
+void GHOST_iosfinalize(blender::bContext *C);
+#endif
+
 /* -------------------------------------------------------------------- */
 /** \name GMP Allocator Workaround
  * \{ */
@@ -179,6 +187,7 @@ namespace blender {
 ApplicationState app_state = []() {
   ApplicationState app_state{};
   app_state.signal.use_crash_handler = true;
+  app_state.signal.use_console_crash_handler = false;
   app_state.signal.use_abort_handler = true;
   app_state.exit_code_on_error.python = 0;
   app_state.main_arg_deferred = nullptr;
@@ -328,13 +337,23 @@ extern "C" int GHOST_HACK_getFirstFile(char buf[]);
  * - run #WM_main() event loop,
  *   or exit immediately when running in background-mode.
  */
-int main(int argc,
-#ifdef USE_WIN32_UNICODE_ARGS
-         const char ** /*argv_c*/
+
+#ifdef WITH_APPLE_CROSSPLATFORM
+int main(int argc, const char **argv)
+{
+  return GHOST_iosmain(argc, argv);
+}
+
+int main_ios_callback(int argc, const char **argv)
 #else
+int main(int argc,
+#  ifdef USE_WIN32_UNICODE_ARGS
+         const char ** /*argv_c*/
+#  else
          const char **argv
-#endif
+#  endif
 )
+#endif
 {
   using namespace blender;
 
@@ -390,7 +409,7 @@ int main(int argc,
 #endif
 
 #if defined(WITH_TBB_MALLOC) && defined(__linux__)
-  /* Enable huge pages for performance .*/
+  /* Enable huge pages for performance. */
   scalable_allocation_mode(TBBMALLOC_USE_HUGE_PAGES, 1);
 #endif
 
@@ -549,7 +568,12 @@ int main(int argc,
 
 #ifdef WITH_CYCLES
   CCL_log_init();
+  CCL_implicit_sharing_init();
 #endif
+
+  /* Set max open files to better handle production files that may use many
+   * open geometry or texture cache file handles. After logging since it's used .*/
+  BLI_system_max_open_files_ensure();
 
   /* Must be initialized after #BKE_appdir_init to account for color-management paths. */
   IMB_init();
@@ -654,10 +678,18 @@ int main(int argc,
     /* Shows the splash as needed. */
     WM_init_splash_on_startup(C);
 
+#  ifdef WITH_APPLE_CROSSPLATFORM
+    /* iOS Main loop handled differently. */
+    blender::WM_main_entry(C);
+    GHOST_iosfinalize(C);
+#  else
     WM_main(C);
+#  endif
   }
+#  ifndef WITH_APPLE_CROSSPLATFORM
   /* Neither #WM_exit, #WM_main return, this quiets CLANG's `unreachable-code-return` warning. */
   BLI_assert_unreachable();
+#  endif
 
 #endif /* !WITH_PYTHON_MODULE */
 

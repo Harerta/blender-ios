@@ -51,10 +51,13 @@
 #include "GPU_debug.hh"
 #include "GPU_framebuffer.hh"
 #include "GPU_immediate.hh"
+#include "GPU_immediate_util.hh"
 #include "GPU_matrix.hh"
 #include "GPU_state.hh"
 #include "GPU_texture.hh"
 #include "GPU_viewport.hh"
+
+#include "PRF_profile.hh"
 
 #include "RE_engine.h"
 
@@ -69,6 +72,7 @@
 #include "wm_window_private.hh"
 
 #include "UI_resources.hh"
+#include "UI_interface_c.hh"
 
 #include "IMB_colormanagement.hh"
 
@@ -330,7 +334,7 @@ static void wm_software_cursor_draw_crosshair(const float system_scale, const in
    * are set by the operating-system, where the pixel information isn't easily available. */
 
   /* The cursor scaled by the "default" size. */
-  const float cursor_scale = float(WM_cursor_preferred_logical_size()) /
+  const float cursor_scale = float(WM_cursor_preferred_logical_size(false)) /
                              float(WM_CURSOR_DEFAULT_LOGICAL_SIZE);
   const float unit = max_ff(system_scale * cursor_scale, 1.0f);
   uint pos = GPU_vertformat_attr_add(immVertexFormat(), "pos", gpu::VertAttrType::SFLOAT_32_32);
@@ -1111,6 +1115,16 @@ static void wm_draw_window_onscreen(bContext *C, wmWindow *win, int view)
   wmWindowManager *wm = CTX_wm_manager(C);
   bScreen *screen = WM_window_get_active_screen(win);
 
+  /* Restore screen context after drawing. Especially important for when this is called for drawing
+   * to an offscreen buffer (see #WM_window_pixels_read_from_offscreen()) from operators or other
+   * handlers. */
+  ScrArea *restore_area = CTX_wm_area(C);
+  ARegion *restore_region = CTX_wm_region(C);
+  BLI_SCOPED_DEFER([&] {
+    CTX_wm_area_set(C, restore_area);
+    CTX_wm_region_set(C, restore_region);
+  });
+
   GPU_debug_group_begin("Window Redraw");
 
   /* Draw into the window frame-buffer, in full window coordinates. */
@@ -1124,6 +1138,22 @@ static void wm_draw_window_onscreen(bContext *C, wmWindow *win, int view)
 #endif
 
   /* Blit non-overlapping area regions. */
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* iOS Floating Overlay: draw a dimmed background behind the floating panel. */
+  if (screen->flag & SCREEN_FLOATING_OVERLAY) {
+    const int2 win_size = WM_window_native_pixel_size(win);
+    GPU_blend(GPU_BLEND_ALPHA);
+    const uint pos = GPU_vertformat_attr_add(
+        immVertexFormat(), "pos", gpu::VertAttrType::SFLOAT_32_32);
+    immBindBuiltinProgram(GPU_SHADER_3D_UNIFORM_COLOR);
+    /* Semi-transparent dark overlay covering the full window. */
+    immUniformColor4f(0.0f, 0.0f, 0.0f, 0.45f);
+    immRectf(pos, 0.0f, 0.0f, float(win_size[0]), float(win_size[1]));
+    immUnbindProgram();
+    GPU_blend(GPU_BLEND_NONE);
+  }
+#endif
+
   ED_screen_areas_iter (win, screen, area) {
     for (ARegion &region : area->regionbase) {
       if (!region.runtime->visible) {
@@ -1178,6 +1208,63 @@ static void wm_draw_window_onscreen(bContext *C, wmWindow *win, int view)
 
   /* After area regions so we can do area 'overlay' drawing. */
   ui::theme::theme_set(0, 0);
+
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* iOS Floating Overlay: draw border and close button for the floating panel. */
+  if (screen->flag & SCREEN_FLOATING_OVERLAY) {
+    ED_screen_areas_iter (win, screen, area) {
+      /* Only draw for non-global (main) areas. */
+      if (!ED_area_is_global(area)) {
+        const float border_width = 1.0f * UI_SCALE_FAC;
+        const rctf panel_rect = {float(area->totrct.xmin) - border_width,
+                                 float(area->totrct.xmax) + border_width,
+                                 float(area->totrct.ymin) - border_width,
+                                 float(area->totrct.ymax) + border_width};
+
+        GPU_blend(GPU_BLEND_ALPHA);
+
+        /* Panel outline. */
+        const float outline_color[4] = {0.3f, 0.3f, 0.3f, 0.8f};
+        ui::draw_roundbox_corner_set(ui::CNR_ALL);
+        ui::draw_roundbox_4fv(&panel_rect, false, 8.0f * UI_SCALE_FAC, outline_color);
+
+        /* Close button: circle with X near the top-right of the panel,
+         * offset to avoid overlapping header bar and toolbar elements. */
+        const float btn_radius = 14.0f * UI_SCALE_FAC;
+        const float btn_cx = panel_rect.xmax - 20.0f * UI_SCALE_FAC;
+        const float btn_cy = panel_rect.ymax - 150.0f * UI_SCALE_FAC;
+
+        /* Filled dark circle background. */
+        const uint pos = GPU_vertformat_attr_add(
+            immVertexFormat(), "pos", gpu::VertAttrType::SFLOAT_32_32);
+        immBindBuiltinProgram(GPU_SHADER_3D_UNIFORM_COLOR);
+        immUniformColor4f(0.15f, 0.15f, 0.15f, 0.9f);
+        imm_draw_circle_fill_2d(pos, btn_cx, btn_cy, btn_radius, 24);
+
+        /* Circle outline. */
+        immUniformColor4f(0.5f, 0.5f, 0.5f, 0.9f);
+        imm_draw_circle_wire_2d(pos, btn_cx, btn_cy, btn_radius, 24);
+
+        /* Draw X mark. */
+        const float x_half = btn_radius * 0.4f;
+        immUniformColor4f(0.85f, 0.85f, 0.85f, 1.0f);
+        GPU_line_width(2.0f * UI_SCALE_FAC);
+        immBegin(GPU_PRIM_LINES, 4);
+        immVertex2f(pos, btn_cx - x_half, btn_cy - x_half);
+        immVertex2f(pos, btn_cx + x_half, btn_cy + x_half);
+        immVertex2f(pos, btn_cx - x_half, btn_cy + x_half);
+        immVertex2f(pos, btn_cx + x_half, btn_cy - x_half);
+        immEnd();
+        GPU_line_width(1.0f);
+
+        immUnbindProgram();
+        GPU_blend(GPU_BLEND_NONE);
+        break; /* Only one main area in maximized screen. */
+      }
+    }
+  }
+#endif
+
   ED_screen_draw_edges(win);
 
   /* Needs zero offset here or it looks blurry. #128112. */
@@ -1223,6 +1310,7 @@ static void wm_draw_window_onscreen(bContext *C, wmWindow *win, int view)
 
 static void wm_draw_window(bContext *C, wmWindow *win)
 {
+  PRF_scope(ProfileCategory::Draw);
   GPU_context_begin_frame(static_cast<GPUContext *>(win->runtime->gpuctx));
 
   bScreen *screen = WM_window_get_active_screen(win);
@@ -1352,9 +1440,8 @@ uint8_t *WM_window_pixels_read_from_frontbuffer(const wmWindowManager *wm,
    * See it's comments for details on why it's needed, see also #98462. */
   bool setup_context = wm->runtime->windrawable != win;
 
-  GHOST_IWindow *ghost_window = static_cast<GHOST_IWindow *>(win->runtime->ghostwin);
   if (setup_context) {
-    ghost_window->activateDrawingContext();
+    static_cast<GHOST_IWindow *>(win->runtime->ghostwin)->activateDrawingContext();
     GPU_context_active_set(static_cast<GPUContext *>(win->runtime->gpuctx));
   }
 
@@ -1366,7 +1453,8 @@ uint8_t *WM_window_pixels_read_from_frontbuffer(const wmWindowManager *wm,
 
   if (setup_context) {
     if (wm->runtime->windrawable) {
-      ghost_window->activateDrawingContext();
+      static_cast<GHOST_IWindow *>(wm->runtime->windrawable->runtime->ghostwin)
+          ->activateDrawingContext();
       GPU_context_active_set(static_cast<GPUContext *>(wm->runtime->windrawable->runtime->gpuctx));
     }
   }
@@ -1391,9 +1479,8 @@ void WM_window_pixels_read_sample_from_frontbuffer(const wmWindowManager *wm,
   BLI_assert(WM_capabilities_flag() & WM_CAPABILITY_GPU_FRONT_BUFFER_READ);
   bool setup_context = wm->runtime->windrawable != win;
 
-  GHOST_IWindow *ghost_window = static_cast<GHOST_IWindow *>(win->runtime->ghostwin);
   if (setup_context) {
-    ghost_window->activateDrawingContext();
+    static_cast<GHOST_IWindow *>(win->runtime->ghostwin)->activateDrawingContext();
     GPU_context_active_set(static_cast<GPUContext *>(win->runtime->gpuctx));
   }
 
@@ -1409,7 +1496,8 @@ void WM_window_pixels_read_sample_from_frontbuffer(const wmWindowManager *wm,
 
   if (setup_context) {
     if (wm->runtime->windrawable) {
-      ghost_window->activateDrawingContext();
+      static_cast<GHOST_IWindow *>(wm->runtime->windrawable->runtime->ghostwin)
+          ->activateDrawingContext();
       GPU_context_active_set(static_cast<GPUContext *>(wm->runtime->windrawable->runtime->gpuctx));
     }
   }
@@ -1628,6 +1716,8 @@ void WM_paint_cursor_tag_redraw(wmWindow *win, ARegion * /*region*/)
 
 void wm_draw_update(bContext *C)
 {
+  PRF_scope(ProfileCategory::Draw);
+
   Main *bmain = CTX_data_main(C);
   wmWindowManager *wm = CTX_wm_manager(C);
   const bool rna_disallow_writes = true;
@@ -1663,6 +1753,7 @@ void wm_draw_update(bContext *C)
     CTX_wm_window_set(C, &win);
 
     if (wm_draw_update_test_window(bmain, C, &win)) {
+      PRF_frame_mark_start("Window Drawing"_ustr);
       /* Sets context window+screen. */
       wm_window_make_drawable(wm, &win);
       wm_window_swap_buffer_acquire(&win);
@@ -1674,6 +1765,7 @@ void wm_draw_update(bContext *C)
       wm_draw_update_clear_window(C, &win);
 
       wm_window_swap_buffer_release(&win);
+      PRF_frame_mark_end("Window Drawing"_ustr);
     }
   }
 

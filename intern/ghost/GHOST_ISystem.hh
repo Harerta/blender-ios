@@ -61,7 +61,7 @@ class GHOST_IEventConsumer;
  * - Microsoft Windows.
  * - X11 (Linux).
  * - Wayland (Linux).
- * - SDL2.
+ * - SDL3.
  * - null (headless mode).
  *
  * \section Building GHOST
@@ -453,6 +453,18 @@ class GHOST_ISystem {
    */
   virtual void putClipboard(const char *buffer, bool selection) const = 0;
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+  virtual GHOST_TSuccess popupOnScreenKeyboard(
+      GHOST_IWindow *window, const GHOST_KeyboardProperties &keyboard_properties) = 0;
+
+  virtual GHOST_TSuccess hideOnScreenKeyboard(GHOST_IWindow *window) = 0;
+
+  virtual const char *getKeyboardInput(GHOST_IWindow *window) = 0;
+
+  virtual GHOST_TSuccess startSecurityScopedFileAccess(const char *filepath) = 0;
+  virtual GHOST_TSuccess stopSecurityScopedFileAccess(const char *filepath) = 0;
+#endif
+
   /**
    * Returns GHOST_kSuccess if the clipboard contains an image.
    */
@@ -512,6 +524,24 @@ class GHOST_ISystem {
                                         const char * /*continue_label*/,
                                         const char * /*link*/,
                                         GHOST_DialogOptions /*dialog_options*/) const = 0;
+
+  /***************************************************************************************
+   * Native File Dialog.
+   ***************************************************************************************/
+
+  /**
+   * Show a native OS file open/save dialog.
+   *
+   * \param title: The title of the dialog.
+   * \param default_path: The default file path to start browsing from.
+   * \param filter_glob: Glob pattern filter (e.g. "*.blend"), or nullptr for all files.
+   * \param action: Whether this is a file open or save dialog.
+   * \return Success if the dialog was presented.
+   */
+  virtual GHOST_TSuccess showNativeFileDialog(const char * /*title*/,
+                                              const char * /*default_path*/,
+                                              const char * /*filter_glob*/,
+                                              GHOST_TFileDialogAction /*action*/) = 0;
 
   /***************************************************************************************
    * Debugging

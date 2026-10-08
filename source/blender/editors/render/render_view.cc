@@ -141,7 +141,20 @@ ScrArea *render_view_open(bContext *C, int mx, int my, ReportList *reports)
     return nullptr;
   }
 
-  if (U.render_display_type == USER_RENDER_DISPLAY_WINDOW) {
+  int render_display_type = U.render_display_type;
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* iOS: new windows have no close controls, force fullscreen overlay.
+   * Both WINDOW and AREA modes are problematic — WINDOW can't be closed,
+   * AREA replaces the layout with no way back. Use SCREEN which goes through
+   * ED_screen_full_newspace and gets SCREEN_FLOATING_OVERLAY treatment. */
+  if (render_display_type == USER_RENDER_DISPLAY_WINDOW ||
+      render_display_type == USER_RENDER_DISPLAY_AREA)
+  {
+    render_display_type = USER_RENDER_DISPLAY_SCREEN;
+  }
+#endif
+
+  if (render_display_type == USER_RENDER_DISPLAY_WINDOW) {
     int sizex, sizey;
     BKE_render_resolution(&scene->r, false, &sizex, &sizey);
 
@@ -186,12 +199,12 @@ ScrArea *render_view_open(bContext *C, int mx, int my, ReportList *reports)
     }
 
     area = CTX_wm_area(C);
-    if (BLI_listbase_is_single(&area->spacedata) == false) {
+    if (area->spacedata.is_single() == false) {
       sima = static_cast<SpaceImage *>(area->spacedata.first);
       sima->flag |= SI_PREVSPACE;
     }
   }
-  else if (U.render_display_type == USER_RENDER_DISPLAY_SCREEN) {
+  else if (render_display_type == USER_RENDER_DISPLAY_SCREEN) {
     area = CTX_wm_area(C);
 
     /* If the active screen is already in full-screen mode, skip this and
@@ -206,6 +219,11 @@ ScrArea *render_view_open(bContext *C, int mx, int my, ReportList *reports)
 
       /* this function returns with changed context */
       area = ED_screen_full_newspace(C, area, SPACE_IMAGE);
+#ifdef WITH_APPLE_CROSSPLATFORM
+      /* Mark as floating overlay so it draws with dimmed background,
+       * rounded border, and a close button. */
+      CTX_wm_screen(C)->flag |= SCREEN_FLOATING_OVERLAY;
+#endif
     }
   }
 

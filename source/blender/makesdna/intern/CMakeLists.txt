@@ -66,31 +66,44 @@ set(BLENLIB_SRC
 )
 
 set(SRC
+  dna_parse.cc
   dna_utils.cc
   makesdna.cc
   ${BLENLIB_SRC}
   ${dna_header_include_file}
   ${dna_header_string_file}
+
+  dna_parse.h
+  dna_utils.h
 )
 
-# BLI_mempool.cc needs these files for ThreadMutex when
-# compiling in address sanitizer mode.
-if(WITH_COMPILER_ASAN)
-  list(APPEND SRC
-  )
+if(NOT WITH_CROSSCOMPILED_TOOLS)
+  # BLI_mempool.cc needs these files for ThreadMutex when
+  # compiling in address sanitizer mode.
+  if(WITH_COMPILER_ASAN)
+    list(APPEND SRC
+    )
+  endif()
+
+  # `SRC_DNA_INC` is defined in the parent directory.
+
+  add_c_and_cxx_flags_custom_test(makesdna)
+
+  add_executable(makesdna ${SRC} ${SRC_DNA_INC})
+  setup_platform_linker_flags(makesdna)
+  setup_platform_linker_libs(makesdna)
+  blender_target_include_dirs(makesdna ${INC})
+  blender_target_include_dirs_sys(makesdna ${INC_SYS})
+  target_link_libraries(makesdna ${LIB})
+
+  if(WIN32 AND NOT UNIX)
+    if(DEFINED PTHREADS_LIBRARIES)
+      target_link_libraries(makesdna PRIVATE ${PTHREADS_LIBRARIES})
+    endif()
+  else()
+    target_link_libraries(makesdna PRIVATE bf::dependencies::pthreads)
+  endif()
 endif()
-
-# `SRC_DNA_INC` is defined in the parent directory.
-
-add_c_and_cxx_flags_custom_test(makesdna)
-
-add_executable(makesdna ${SRC} ${SRC_DNA_INC})
-setup_platform_linker_flags(makesdna)
-setup_platform_linker_libs(makesdna)
-blender_target_include_dirs(makesdna ${INC})
-blender_target_include_dirs_sys(makesdna ${INC_SYS})
-target_link_libraries(makesdna ${LIB})
-target_link_libraries(makesdna PRIVATE bf::dependencies::pthreads)
 
 # Output dna.cc
 add_custom_command(

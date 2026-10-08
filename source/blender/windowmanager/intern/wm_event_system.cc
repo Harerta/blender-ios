@@ -67,6 +67,8 @@
 
 #include "GPU_context.hh"
 
+#include "PRF_profile.hh"
+
 #include "RNA_access.hh"
 
 #include "UI_interface.hh"
@@ -345,6 +347,11 @@ bool wmNotifierEqForQueue::operator()(const wmNotifier *a, const wmNotifier *b) 
 }
 }  // namespace bke
 
+void WM_event_handling_break(const bContext &C)
+{
+  CTX_wm_manager(&C)->runtime->break_events_handling = true;
+}
+
 static void wm_event_add_notifier_intern(wmWindowManager *wm,
                                          const wmWindow *win,
                                          uint type,
@@ -480,6 +487,7 @@ static bool wm_notifier_is_clear(const wmNotifier *note)
 
 void wm_event_do_depsgraph(bContext *C, bool is_after_open_file)
 {
+  const Main *bmain = CTX_data_main(C);
   wmWindowManager *wm = CTX_wm_manager(C);
   /* The whole idea of locked interface is to prevent viewport and whatever thread from
    * modifying the same data. Because of this, we can not perform dependency graph update. */
@@ -493,7 +501,7 @@ void wm_event_do_depsgraph(bContext *C, bool is_after_open_file)
     ViewLayer *view_layer = WM_window_get_active_view_layer(&win);
     const bScreen *screen = WM_window_get_active_screen(&win);
 
-    ED_view3d_screen_datamask(scene, view_layer, screen, &win_combine_v3d_datamask);
+    ED_view3d_screen_datamask(*bmain, scene, view_layer, screen, &win_combine_v3d_datamask);
   }
   /* Update all the dependency graphs of visible view layers. */
   for (wmWindow &win : wm->windows) {
@@ -587,6 +595,7 @@ static bool notifier_refreshes_node_group_operators(const wmNotifier &note)
 
 void wm_event_do_notifiers(bContext *C)
 {
+  PRF_scope(ProfileCategory::Core);
   /* Ensure inside render boundary. */
   GPU_render_begin();
 
@@ -703,7 +712,7 @@ void wm_event_do_notifiers(bContext *C)
 
       note_next = note->next;
       if (wm_notifier_is_clear(note)) {
-        BLI_remlink(&wm->runtime->notifier_queue, (void *)note);
+        BLI_remlink(&wm->runtime->notifier_queue, const_cast<wmNotifier *>(note));
         MEM_delete(note);
       }
     }
@@ -795,6 +804,7 @@ void wm_event_do_notifiers(bContext *C)
           area_params.area = area;
           area_params.notifier = note;
           area_params.scene = scene;
+          area_params.bmain = CTX_data_main(C);
           ED_area_do_listen(&area_params);
           for (ARegion &region : area->regionbase) {
             wmRegionListenerParams region_params{};
@@ -1032,7 +1042,7 @@ void WM_ndof_deadzone_set(float deadzone)
 void WM_reports_from_reports_move(wmWindowManager *wm, ReportList *reports)
 {
   /* If the caller owns them, handle this. */
-  if (!reports || BLI_listbase_is_empty(&reports->list) || (reports->flag & RPT_OP_HOLD) != 0) {
+  if (!reports || reports->list.is_empty() || (reports->flag & RPT_OP_HOLD) != 0) {
     return;
   }
 
@@ -1048,7 +1058,7 @@ void WM_reports_from_reports_move(wmWindowManager *wm, ReportList *reports)
 
 void WM_global_report(eReportType type, const char *message)
 {
-  /* WARNING: in most cases #BKE_report should be used instead, see doc-string for details. */
+  /* WARNING: in most cases #BKE_report should be used instead, see docstring for details. */
   ReportList reports;
   BKE_reports_init(&reports, RPT_STORE | RPT_PRINT);
   BKE_report_print_level_set(&reports, RPT_WARNING);
@@ -1061,7 +1071,7 @@ void WM_global_report(eReportType type, const char *message)
 
 void WM_global_reportf(eReportType type, const char *format, ...)
 {
-  /* WARNING: in most cases #BKE_reportf should be used instead, see doc-string for details. */
+  /* WARNING: in most cases #BKE_reportf should be used instead, see docstring for details. */
 
   va_list args;
 
@@ -1102,6 +1112,8 @@ static intptr_t wm_operator_register_active_id(const wmWindowManager *wm)
 
 bool WM_operator_poll(bContext *C, wmOperatorType *ot)
 {
+  PRF_scope_with_name("Operator Call (poll)", ProfileCategory::Default);
+  PRF_scope_set_dynamic_name("Op: %s", ot->idname);
 
   for (wmOperatorTypeMacro &otmacro : ot->macro) {
     wmOperatorType *ot_macro = WM_operatortype_find(otmacro.idname, false);
@@ -1244,9 +1256,7 @@ static void wm_operator_reports(bContext *C,
                 pystring.c_str());
 
   /* Refresh Info Editor with reports immediately, even if op returned #OPERATOR_CANCELLED. */
-  if ((retval & (OPERATOR_FINISHED | OPERATOR_CANCELLED)) &&
-      !BLI_listbase_is_empty(&op->reports->list))
-  {
+  if ((retval & (OPERATOR_FINISHED | OPERATOR_CANCELLED)) && !op->reports->list.is_empty()) {
     WM_event_add_notifier(C, NC_SPACE | ND_SPACE_INFO_REPORT, nullptr);
   }
   /* If the caller owns them, handle this. */
@@ -1453,7 +1463,7 @@ wmOperatorStatus WM_operator_call_notest(bContext *C, wmOperator *op)
 
 wmOperatorStatus WM_operator_repeat(bContext *C, wmOperator *op)
 {
-  const int op_flag = OP_IS_REPEAT;
+  const eOperator_Flag op_flag = OP_IS_REPEAT;
   op->flag |= op_flag;
   const wmOperatorStatus ret = wm_operator_exec(C, op, true, true);
   op->flag &= ~op_flag;
@@ -1461,7 +1471,7 @@ wmOperatorStatus WM_operator_repeat(bContext *C, wmOperator *op)
 }
 wmOperatorStatus WM_operator_repeat_last(bContext *C, wmOperator *op)
 {
-  const int op_flag = OP_IS_REPEAT_LAST;
+  const eOperator_Flag op_flag = OP_IS_REPEAT_LAST;
   op->flag |= op_flag;
   const wmOperatorStatus ret = wm_operator_exec(C, op, true, true);
   op->flag &= ~op_flag;
@@ -1647,6 +1657,8 @@ static wmOperatorStatus wm_operator_invoke(bContext *C,
   }
 
   if (WM_operator_poll(C, ot)) {
+    PRF_scope_with_name("Operator Call (exec/invoke)", ProfileCategory::Default);
+    PRF_scope_set_dynamic_name("Op: %s", ot->idname);
     wmWindowManager *wm = CTX_wm_manager(C);
     const intptr_t undo_id_prev = wm_operator_undo_active_id(wm);
     const intptr_t register_id_prev = wm_operator_register_active_id(wm);
@@ -1759,7 +1771,10 @@ static wmOperatorStatus wm_operator_invoke(bContext *C,
 
           /* Wrap only in X for header. */
           if (region && RGN_TYPE_IS_HEADER_ANY(region->regiontype)) {
-            wrap = WM_CURSOR_WRAP_X;
+            /* Disable cursor wrapping/continuous grab when scrubbing playhead in scrubbing region.
+             */
+            wrap = (region->regiontype != RGN_TYPE_SCRUBBING) ? WM_CURSOR_WRAP_X :
+                                                                WM_CURSOR_WRAP_NONE;
           }
 
           if (region && region->regiontype == RGN_TYPE_WINDOW &&
@@ -2015,7 +2030,7 @@ wmOperatorStatus WM_operator_call_py(bContext *C,
  *
  * Delay executing operators that depend on cursor location.
  *
- * See: #OPTYPE_DEPENDS_ON_CURSOR doc-string for more information.
+ * See: #OPTYPE_DEPENDS_ON_CURSOR docstring for more information.
  * \{ */
 
 struct OperatorWaitForInput {
@@ -2651,6 +2666,8 @@ static eHandlerActionFlag wm_handler_operator_call(bContext *C,
        * nothing to do in this case. */
     }
     else if (ot->modal) {
+      PRF_scope_with_name("Operator Call (modal)", ProfileCategory::Default);
+      PRF_scope_set_dynamic_name("Op: %s", ot->idname);
       /* We set context to where modal handler came from. */
       wmWindowManager *wm = CTX_wm_manager(C);
       wmWindow *win = CTX_wm_window(C);
@@ -2694,7 +2711,7 @@ static eHandlerActionFlag wm_handler_operator_call(bContext *C,
         }
         else {
           /* Not very common, but modal operators may report before finishing. */
-          if (!BLI_listbase_is_empty(&op->reports->list)) {
+          if (!op->reports->list.is_empty()) {
             WM_event_add_notifier(C, NC_SPACE | ND_SPACE_INFO_REPORT, nullptr);
             WM_reports_from_reports_move(wm, op->reports);
           }
@@ -2854,6 +2871,62 @@ static eHandlerActionFlag wm_handler_fileselect_do(bContext *C,
 
   switch (val) {
     case EVT_FILESELECT_FULL_OPEN: {
+#ifdef WITH_APPLE_CROSSPLATFORM
+      /* On iOS, use the native file picker instead of Blender's built-in file browser. */
+      {
+        GHOST_ISystem *ghost_system = GHOST_ISystem::getSystem();
+        if (ghost_system &&
+            (ghost_system->getCapabilities() & GHOST_kCapabilityNativeFileDialog))
+        {
+          /* Determine open vs save from operator's "check_existing" RNA property.
+           * This property defaults to true for FILE_SAVE actions. */
+          GHOST_TFileDialogAction dialog_action = GHOST_kFileDialogOpen;
+          PropertyRNA *prop_check = RNA_struct_find_property(handler->op->ptr, "check_existing");
+          if (prop_check && RNA_property_boolean_get(handler->op->ptr, prop_check)) {
+            dialog_action = GHOST_kFileDialogSave;
+          }
+
+          /* Get default path from operator's filepath or directory property. */
+          char default_path[1024] = "";
+          PropertyRNA *prop_filepath = RNA_struct_find_property(handler->op->ptr, "filepath");
+          if (prop_filepath) {
+            RNA_property_string_get(handler->op->ptr, prop_filepath, default_path);
+          }
+          if (default_path[0] == '\0') {
+            PropertyRNA *prop_dir = RNA_struct_find_property(handler->op->ptr, "directory");
+            if (prop_dir) {
+              RNA_property_string_get(handler->op->ptr, prop_dir, default_path);
+            }
+          }
+
+          /* Get filter_glob if available. */
+          char filter_glob[256] = "";
+          PropertyRNA *prop_glob = RNA_struct_find_property(handler->op->ptr, "filter_glob");
+          if (prop_glob) {
+            RNA_property_string_get(handler->op->ptr, prop_glob, filter_glob);
+          }
+
+          /* If no specific filter glob, try to infer from filter_blender bool. */
+          if (filter_glob[0] == '\0') {
+            PropertyRNA *prop_blend = RNA_struct_find_property(handler->op->ptr, "filter_blender");
+            if (prop_blend && RNA_property_boolean_get(handler->op->ptr, prop_blend)) {
+              STRNCPY(filter_glob, "*.blend");
+            }
+          }
+
+          if (ghost_system->showNativeFileDialog(IFACE_("Select File"),
+                                                  default_path[0] ? default_path : nullptr,
+                                                  filter_glob[0] ? filter_glob : nullptr,
+                                                  dialog_action) == GHOST_kSuccess)
+          {
+            action = WM_HANDLER_BREAK;
+            break;
+          }
+          /* If native dialog failed, fall through to built-in file browser. */
+        }
+      }
+#endif /* WITH_APPLE_CROSSPLATFORM */
+
       ScrArea *area = ED_screen_temp_space_open(
           C, IFACE_("Blender File View"), SPACE_FILE, U.filebrowser_display_type, true);
       if (!area) {
@@ -2899,6 +2972,11 @@ static eHandlerActionFlag wm_handler_fileselect_do(bContext *C,
         ScrArea *ctx_area = CTX_wm_area(C);
 
         wmWindow *temp_win = nullptr;
+#ifdef WITH_APPLE_CROSSPLATFORM
+        /* On iOS the native file picker is used; no temporary file browser window was opened,
+         * so skip the SpaceFile cleanup and window close logic. */
+        (void)ctx_area;
+#else
         for (wmWindow &win : wm->windows) {
           bScreen *screen = WM_window_get_active_screen(&win);
           ScrArea *file_area = static_cast<ScrArea *>(screen->areabase.first);
@@ -2916,7 +2994,7 @@ static eHandlerActionFlag wm_handler_fileselect_do(bContext *C,
 
           ED_fileselect_params_to_userdef(static_cast<SpaceFile *>(file_area->spacedata.first));
 
-          if (BLI_listbase_is_single(&file_area->spacedata)) {
+          if (file_area->spacedata.is_single()) {
             BLI_assert(root_win != &win);
 
             wm_window_close_request(C, wm, &win);
@@ -2949,6 +3027,7 @@ static eHandlerActionFlag wm_handler_fileselect_do(bContext *C,
           ED_fileselect_params_to_userdef(static_cast<SpaceFile *>(ctx_area->spacedata.first));
           ED_screen_full_prevspace(C, ctx_area);
         }
+#endif /* !WITH_APPLE_CROSSPLATFORM */
       }
 
       CTX_wm_window_set(C, root_win);
@@ -2971,8 +3050,31 @@ static eHandlerActionFlag wm_handler_fileselect_do(bContext *C,
           wm->op_undo_depth++;
         }
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+        /* On iOS, bracket the operator exec with security-scoped file access.
+         * Files picked via UIDocumentPickerViewController require this for
+         * read/write through standard POSIX I/O (fopen etc.). */
+        char ios_filepath[1024] = "";
+        {
+          PropertyRNA *prop_fp = RNA_struct_find_property(handler->op->ptr, "filepath");
+          if (prop_fp) {
+            RNA_property_string_get(handler->op->ptr, prop_fp, ios_filepath);
+          }
+        }
+        GHOST_ISystem *ghost_system_fs = GHOST_ISystem::getSystem();
+        if (ghost_system_fs && ios_filepath[0] != '\0') {
+          ghost_system_fs->startSecurityScopedFileAccess(ios_filepath);
+        }
+#endif
+
         const wmOperatorStatus retval = handler->op->type->exec(C, handler->op);
         OPERATOR_RETVAL_CHECK(retval);
+
+#ifdef WITH_APPLE_CROSSPLATFORM
+        if (ghost_system_fs && ios_filepath[0] != '\0') {
+          ghost_system_fs->stopSecurityScopedFileAccess(ios_filepath);
+        }
+#endif
 
         /* XXX check this carefully, `CTX_wm_manager(C) == wm` is a bit hackish. */
         if (handler->op->type->flag & OPTYPE_UNDO && CTX_wm_manager(C) == wm) {
@@ -3548,7 +3650,7 @@ static eHandlerActionFlag wm_handlers_do_intern(bContext *C,
                 }
 
                 if (wmDragAsset *asset_data = WM_drag_get_asset_data(&drag, 0)) {
-                  if (asset_data->asset->is_online()) {
+                  if (asset_data->asset->is_online_only()) {
                     BKE_reportf(CTX_wm_reports(C),
                                 RPT_ERROR,
                                 "Asset '%s' is still downloading",
@@ -3944,7 +4046,7 @@ static eHandlerActionFlag wm_event_drag_and_drop_test(wmWindowManager *wm,
 {
   bScreen *screen = WM_window_get_active_screen(win);
 
-  if (BLI_listbase_is_empty(&wm->runtime->drags)) {
+  if (wm->runtime->drags.is_empty()) {
     return WM_HANDLER_CONTINUE;
   }
 
@@ -4067,8 +4169,8 @@ static void wm_event_handle_xrevent(wmWindowManager *wm,
 
   /* Check if the XR context scene matches the main Blender context scene to counter-act possible
    * re-allocation on undo operator execution. */
-  const unsigned int xr_ctx_scene_uid = CTX_data_scene(xr_context)->id.session_uid;
-  const unsigned int main_ctx_scene_uid = CTX_data_scene(main_context)->id.session_uid;
+  const uint xr_ctx_scene_uid = CTX_data_scene(xr_context)->id.session_uid;
+  const uint main_ctx_scene_uid = CTX_data_scene(main_context)->id.session_uid;
   const bool ctx_xr_main_scene_match = (xr_ctx_scene_uid == main_ctx_scene_uid);
 
   /* Only process XR operator handlers to prevent interferences with main window handlers.
@@ -4155,12 +4257,10 @@ static eHandlerActionFlag wm_event_do_region_handlers(bContext *C, wmEvent *even
   wm_region_mouse_co(C, event);
 
   const wmWindowManager *wm = CTX_wm_manager(C);
-  if (!BLI_listbase_is_empty(&wm->runtime->drags)) {
+  if (!wm->runtime->drags.is_empty()) {
     /* Does polls for drop regions and checks #uiButs. */
     /* Need to be here to make sure region context is true. */
-    if (ELEM(event->type, MOUSEMOVE, EVT_DROP) || ISKEYMODIFIER(event->type)) {
-      wm_drags_check_ops(C, event);
-    }
+    wm_drags_handle_events(C, event);
   }
 
   return wm_handlers_do(
@@ -4201,8 +4301,11 @@ static eHandlerActionFlag wm_event_do_handlers_area_regions(bContext *C,
 
 void wm_event_do_handlers(bContext *C)
 {
+  PRF_scope(ProfileCategory::Core);
   wmWindowManager *wm = CTX_wm_manager(C);
   BLI_assert(ED_undo_is_state_valid(C));
+
+  wm->runtime->break_events_handling = false;
 
   /* Begin GPU render boundary - Certain event handlers require GPU usage. */
   GPU_render_begin();
@@ -4212,6 +4315,12 @@ void wm_event_do_handlers(bContext *C)
   WM_gizmoconfig_update(CTX_data_main(C));
 
   for (wmWindow &win : wm->windows) {
+    /* Do the check at the start of the next iteration, to avoid by-passing it in case the
+     * previous iteration has been early-terminated (using `continue;` e.g.). */
+    if (wm->runtime->break_events_handling) {
+      break;
+    }
+
     bScreen *screen = WM_window_get_active_screen(&win);
 
     /* Some safety checks - these should always be set! */
@@ -4225,6 +4334,12 @@ void wm_event_do_handlers(bContext *C)
 
     wmEvent *event;
     while ((event = static_cast<wmEvent *>(win.runtime->event_queue.first))) {
+      /* Do the check at the start of the next iteration, to avoid by-passing it in case the
+       * previous iteration has been early-terminated (using `continue;` e.g.). */
+      if (wm->runtime->break_events_handling) {
+        break;
+      }
+
       eHandlerActionFlag action = WM_HANDLER_CONTINUE;
 
       /* Force handling drag if a key is pressed even if the drag threshold has not been met.
@@ -4352,6 +4467,40 @@ void wm_event_do_handlers(bContext *C)
         }
 #endif
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+        /* iOS Floating Overlay: intercept close-button clicks BEFORE area
+         * handlers, so the underlying area does not consume the event. */
+        if ((screen->flag & SCREEN_FLOATING_OVERLAY) &&
+            ISMOUSE_BUTTON(event->type) && event->val == KM_PRESS)
+        {
+          ED_screen_areas_iter (&win, screen, area) {
+            if (!ED_area_is_global(area)) {
+              const float btn_radius = 14.0f * UI_SCALE_FAC;
+              const float border_width = 1.0f * UI_SCALE_FAC;
+              const float btn_cx = float(area->totrct.xmax) + border_width - 20.0f * UI_SCALE_FAC;
+              const float btn_cy = float(area->totrct.ymax) + border_width - 150.0f * UI_SCALE_FAC;
+              const float dx = float(event->xy[0]) - btn_cx;
+              const float dy = float(event->xy[1]) - btn_cy;
+              /* Use a slightly larger hit area for easier touch targeting. */
+              if ((dx * dx + dy * dy) <= (btn_radius * 1.5f) * (btn_radius * 1.5f)) {
+                /* Hit the close button — close the floating overlay. */
+                for (ScrArea &area_iter : screen->areabase) {
+                  if (area_iter.full) {
+                    ED_screen_full_prevspace(C, &area_iter);
+                    action |= WM_HANDLER_BREAK;
+                    break;
+                  }
+                }
+              }
+              break;
+            }
+          }
+        }
+        if ((action & WM_HANDLER_BREAK) != 0) {
+          /* Close button was hit — skip area processing. */
+        }
+        else
+#endif
         ED_screen_areas_iter (&win, screen, area) {
           /* After restoring a screen from SCREENMAXIMIZED we have to wait
            * with the screen handling till the region coordinates are updated. */
@@ -4392,6 +4541,32 @@ void wm_event_do_handlers(bContext *C)
              * mouse-move needs handled for previous area. */
           }
         }
+
+#ifdef WITH_APPLE_CROSSPLATFORM
+        /* iOS Floating Overlay: close when clicking outside all areas
+         * (on the dimmed background). Close-button hit is handled above,
+         * before the area handler loop. */
+        if ((action & WM_HANDLER_BREAK) == 0 && (screen->flag & SCREEN_FLOATING_OVERLAY) &&
+            ISMOUSE_BUTTON(event->type) && event->val == KM_PRESS)
+        {
+          bool inside_any_area = false;
+          ED_screen_areas_iter (&win, screen, area) {
+            if (wm_event_inside_rect(event, &area->totrct)) {
+              inside_any_area = true;
+              break;
+            }
+          }
+          if (!inside_any_area) {
+            for (ScrArea &area_iter : screen->areabase) {
+              if (area_iter.full) {
+                ED_screen_full_prevspace(C, &area_iter);
+                action |= WM_HANDLER_BREAK;
+                break;
+              }
+            }
+          }
+        }
+#endif
 
         if ((action & WM_HANDLER_BREAK) == 0) {
           /* Also some non-modal handlers need active area/region. */
@@ -5048,6 +5223,9 @@ bool WM_event_handler_region_v2d_mask_poll(const wmWindow * /*win*/,
                                            const ARegion *region,
                                            const wmEvent *event)
 {
+  if (wm_event_always_pass(event)) {
+    return true;
+  }
   rcti rect = region->v2d.mask;
   BLI_rcti_translate(&rect, region->winrct.xmin, region->winrct.ymin);
   return event_or_prev_in_rect(event, &rect);
@@ -5075,9 +5253,11 @@ bool WM_event_handler_region_marker_poll(const wmWindow *win,
     }
   }
 
+  /* FIXME: Ideally we should not have to use G_MAIN here, though practically this is probably fine
+   * for now. */
   const ListBaseT<TimeMarker> *markers = ED_scene_markers_get_from_area(
-      scene, WM_window_get_active_view_layer(win), area);
-  if (BLI_listbase_is_empty(markers)) {
+      *G_MAIN, scene, WM_window_get_active_view_layer(win), area);
+  if (markers->is_empty()) {
     return false;
   }
 
@@ -5097,9 +5277,11 @@ bool WM_event_handler_region_v2d_mask_no_marker_poll(const wmWindow *win,
     return false;
   }
   /* Casting away `const` is only needed for a non-constant return value. */
+  /* FIXME: Ideally we should not have to use G_MAIN here, though practically this is probably fine
+   * for now. */
   const ListBaseT<TimeMarker> *markers = ED_scene_markers_get_from_area(
-      WM_window_get_active_scene(win), WM_window_get_active_view_layer(win), area);
-  if (markers && !BLI_listbase_is_empty(markers)) {
+      *G_MAIN, WM_window_get_active_scene(win), WM_window_get_active_view_layer(win), area);
+  if (markers && !markers->is_empty()) {
     return !WM_event_handler_region_marker_poll(win, area, region, event);
   }
   return true;
@@ -5536,6 +5718,16 @@ static wmEventType wm_event_type_from_ghost_key(GHOST_TKey key)
 
     case GHOST_kKeyUnknown:
       return EVT_UNKNOWNKEY;
+
+#ifdef WITH_APPLE_CROSSPLATFORM
+      /* TODO(iOS IOS-004): Pipe UITextInput callbacks through the regular event queue instead
+       * of a synthetic key event. See doc/ios/known_issues.md. */
+    case GHOST_kKeyTextEdit:
+      return EVT_TEXTEDIT;
+
+#else
+    case GHOST_kKeyF24:
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
       /* Ensure all members of this enum are handled, otherwise generate a compiler warning.
@@ -5976,7 +6168,7 @@ static bool wm_event_is_same_key_press(const wmEvent &event_a, const wmEvent &ev
  */
 static bool wm_event_is_ignorable_key_press(const wmWindow *win, const wmEvent &event)
 {
-  if (BLI_listbase_is_empty(&win->runtime->event_queue)) {
+  if (win->runtime->event_queue.is_empty()) {
     /* If the queue is empty never ignore the event.
      * Empty queue at this point means that the events are handled fast enough, and there is no
      * reason to ignore anything. */
@@ -6149,6 +6341,13 @@ void wm_event_add_ghostevent(wmWindowManager *wm,
         event.flag |= WM_EVENT_SCROLL_INVERT;
       }
 
+      /* Distinguish between single finger and multi-finger events for iOS.*/
+      if (pd->numFingers == 2) {
+        event.flag |= WM_EVENT_MULTITOUCH_TWO_FINGERS;
+      }
+      else if (pd->numFingers == 3) {
+        event.flag |= WM_EVENT_MULTITOUCH_THREE_FINGERS;
+      }
 #if !defined(WIN32) && !defined(__APPLE__)
       /* Ensure "auto" is used when supported. */
       char trackpad_scroll_direction = U.trackpad_scroll_direction;
@@ -6169,6 +6368,40 @@ void wm_event_add_ghostevent(wmWindowManager *wm,
       wm_event_add_trackpad(win, &event, delta[0], delta[1]);
       break;
     }
+    /* Multi-touch. */
+    case GHOST_kEventTouch: {
+      const GHOST_TEventTouchData *td = static_cast<const GHOST_TEventTouchData *>(customdata);
+      switch (td->subtype) {
+        case GHOST_kTouchEventEdgeSwipeInLeft:
+          event.type = TOUCH_EDGE_SWIPE_IN_LEFT;
+          event.val = KM_PRESS;
+          wm_event_add_intern(win, &event);
+          break;
+        case GHOST_kTouchEventEdgeSwipeInRight:
+          event.type = TOUCH_EDGE_SWIPE_IN_RIGHT;
+          event.val = KM_PRESS;
+          wm_event_add_intern(win, &event);
+          break;
+        default:
+          break;
+      }
+      break;
+    }
+    case GHOST_kEventTwoFingerTap:
+      event.type = TOUCH_TWO_FINGER_TAP;
+      event.val = KM_PRESS;
+      wm_event_add_intern(win, &event);
+      break;
+    case GHOST_kEventThreeFingerTap:
+      event.type = TOUCH_THREE_FINGER_TAP;
+      event.val = KM_PRESS;
+      wm_event_add_intern(win, &event);
+      break;
+    case GHOST_kEventFourFingerTap:
+      event.type = TOUCH_FOUR_FINGER_TAP;
+      event.val = KM_PRESS;
+      wm_event_add_intern(win, &event);
+      break;
     /* Mouse button. */
     case GHOST_kEventButtonDown:
     case GHOST_kEventButtonUp: {
@@ -6754,6 +6987,7 @@ void WM_window_cursor_keymap_status_free(wmWindow *win)
 
 void WM_window_cursor_keymap_status_refresh(bContext *C, wmWindow *win)
 {
+  const Main *bmain = CTX_data_main(C);
   bScreen *screen = WM_window_get_active_screen(win);
   ScrArea *area_statusbar = WM_window_status_area_find(win, screen);
   if (area_statusbar == nullptr) {
@@ -6825,7 +7059,8 @@ void WM_window_cursor_keymap_status_refresh(bContext *C, wmWindow *win)
       WorkSpace *workspace = WM_window_get_active_workspace(win);
       bToolKey tkey{};
       tkey.space_type = area->spacetype;
-      tkey.mode = WM_toolsystem_mode_from_spacetype(scene, view_layer, area, area->spacetype);
+      tkey.mode = WM_toolsystem_mode_from_spacetype(
+          *bmain, scene, view_layer, area, area->spacetype);
       tref = WM_toolsystem_ref_find(workspace, &tkey);
     }
     wm_event_cursor_store(

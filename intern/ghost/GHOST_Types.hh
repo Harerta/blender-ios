@@ -110,6 +110,12 @@ enum GHOST_DialogOptions {
   GHOST_DialogError = (1 << 1),
 };
 
+/** Action type for native file dialogs. */
+enum GHOST_TFileDialogAction {
+  GHOST_kFileDialogOpen = 0,
+  GHOST_kFileDialogSave = 1,
+};
+
 /**
  * Static flag (relating to the back-ends support for features).
  *
@@ -184,6 +190,11 @@ enum GHOST_TCapabilityFlag {
    * Otherwise client-side-decorations should be used, see: `WITH_GHOST_CSD`.
    */
   GHOST_kCapabilityWindowDecorationServerSide = (1 << 14),
+  /**
+   * Support for native OS file open/save dialogs.
+   * When set, the system can present a native file picker instead of Blender's built-in browser.
+   */
+  GHOST_kCapabilityNativeFileDialog = (1 << 15),
 };
 
 /**
@@ -197,7 +208,8 @@ enum GHOST_TCapabilityFlag {
    GHOST_kCapabilityTrackpadPhysicalDirection | GHOST_kCapabilityWindowDecorationStyles | \
    GHOST_kCapabilityKeyboardHyperKey | GHOST_kCapabilityCursorRGBA | \
    GHOST_kCapabilityCursorGenerator | GHOST_kCapabilityMultiMonitorPlacement | \
-   GHOST_kCapabilityWindowPath | GHOST_kCapabilityWindowDecorationServerSide)
+   GHOST_kCapabilityWindowPath | GHOST_kCapabilityWindowDecorationServerSide | \
+   GHOST_kCapabilityNativeFileDialog)
 
 /* Xtilt and Ytilt represent how much the pen is tilted away from
  * vertically upright in either the X or Y direction, with X and Y the
@@ -326,6 +338,17 @@ enum GHOST_TEventType {
    * \note #GHOST_GetEventData returns #GHOST_TEventTrackpadData.
    */
   GHOST_kEventTrackpad,
+  /**
+   * Touch event.
+   *
+   * \note #GHOST_GetEventData returns #GHOST_TEventTouchData.
+   */
+  GHOST_kEventTouch,
+
+  /** Multi touch event. */
+  GHOST_kEventTwoFingerTap,
+  GHOST_kEventThreeFingerTap,
+  GHOST_kEventFourFingerTap,
 
 #ifdef WITH_INPUT_NDOF
   /**
@@ -372,6 +395,9 @@ enum GHOST_TEventType {
 
   GHOST_kEventOpenMainFile, /* Needed for Cocoa to open double-clicked .blend file at startup. */
   GHOST_kEventNativeResolutionChange, /* Needed for Cocoa when window moves to other display. */
+
+  /** Result from a native file dialog (iOS). Data is filepath string (or nullptr on cancel). */
+  GHOST_kEventNativeFileDialogResult,
 
   GHOST_kEventImeCompositionStart,
   GHOST_kEventImeComposition,
@@ -583,6 +609,10 @@ enum GHOST_TKey {
   GHOST_kKeyF23,
   GHOST_kKeyF24,
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+  GHOST_kKeyTextEdit,
+#endif
+
   /* Multimedia keypad buttons. */
   GHOST_kKeyMediaPlay,
   GHOST_kKeyMediaStop,
@@ -671,7 +701,28 @@ struct GHOST_TEventTrackpadData {
   int32_t deltaY;
   /** The delta is inverted from the device due to system preferences. */
   char isDirectionInverted;
+  /** Number of fingers triggering trackpad or touch event. */
+  uint numFingers;
 };
+
+typedef enum {
+  GHOST_kTouchEventUnknown = 0,
+  GHOST_kTouchEventEdgeSwipeInLeft,
+  GHOST_kTouchEventEdgeSwipeOutLeft,
+  GHOST_kTouchEventEdgeSwipeInRight,
+  GHOST_kTouchEventEdgeSwipeOutRight,
+} GHOST_TTouchEventSubTypes;
+
+typedef struct {
+  /** The event subtype */
+  GHOST_TTouchEventSubTypes subtype;
+  /** The x-location of the touch event */
+  int32_t x;
+  /** The y-location of the touch event */
+  int32_t y;
+  /** Number of fingers triggering touch or touch event. */
+  uint numFingers;
+} GHOST_TEventTouchData;
 
 enum GHOST_TDragnDropTypes {
   GHOST_kDragnDropTypeUnknown = 0,
@@ -784,12 +835,27 @@ enum GHOST_TWindowDecorationStyleFlags {
 };
 
 struct GHOST_GPUDevice {
+  /**
+   * When true: use the specified GPU.
+   * When false: fallback to saved GPU.
+   */
+  bool is_override;
+  /**
+   * When true, a missing override device causes context creation to fail instead of falling back.
+   */
+  bool fail_on_invalid_override;
   /** Index of the GPU device in the list provided by the platform. */
   int index;
   /** (PCI) Vendor ID of the GPU. */
   uint vendor_id;
   /** Device ID of the GPU provided by the vendor. */
   uint device_id;
+  /** Saved preference to fall back to when the override device is unavailable. */
+  int fallback_index;
+  /** Saved preference fallback (PCI) Vendor ID. */
+  uint fallback_vendor_id;
+  /** Saved preference fallback Device ID. */
+  uint fallback_device_id;
 };
 
 /**
@@ -1386,3 +1452,44 @@ enum GHOST_NDOF_ButtonT {
 
   GHOST_NDOF_BUTTON_USER = 0x10000
 };
+
+#ifdef WITH_APPLE_CROSSPLATFORM
+
+/** How to setup an onscreen keyboard */
+struct GHOST_KeyboardProperties {
+
+  /* Initial starting state of text box. */
+  enum text_field_state {
+    move_cursor_to_start,
+    move_cursor_to_end,
+    select_all_text,
+    select_text_range
+  };
+  text_field_state inital_text_state;
+  int text_select_range[2];
+
+  /* Type of keyboard to display. */
+  enum keyboard_type_desc {
+    ascii_keyboard_type,
+    decimal_numpad_keyboard_type,
+    numpad_keyboard_type
+  };
+  keyboard_type_desc keyboard_type;
+
+  /* Size is in points. */
+  float font_size;
+  /* Format is RGBA. */
+  float font_color[4];
+
+  /* On-screen location of text box. */
+  float text_box_origin[2];
+  float text_box_size[2];
+
+  /* Any tips to display next to keyboard input. */
+  const char *tip_text;
+
+  /* Initial string. */
+  const char *text_string;
+};
+
+#endif

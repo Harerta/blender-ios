@@ -441,6 +441,11 @@ class PassBase {
   void specialize_constant(gpu::Shader *shader, const char *name, const uint *data);
   void specialize_constant(gpu::Shader *shader, const char *name, const bool *data);
 
+  void texture_copy(gpu::Texture *src, gpu::Texture *dst);
+  void texture_copy(gpu::Texture **src, gpu::Texture **dst);
+  void texture_copy(gpu::Texture **src, gpu::Texture *dst);
+  void texture_copy(gpu::Texture *src, gpu::Texture **dst);
+
   /**
    * Custom resource binding.
    * Syntactic sugar to avoid calling `resources.bind_resources(pass)` which is semantically less
@@ -466,6 +471,13 @@ class PassBase {
   /**
    * Internal Helpers
    */
+
+  /** Return true if a shader is bound and ready for drawing/dispatching.
+   * On iOS, some shaders may fail to compile; this avoids crashing. */
+  bool has_active_shader() const
+  {
+    return LIKELY(shader_ != nullptr);
+  }
 
   int push_constant_offset(const char *name);
 
@@ -647,7 +659,8 @@ template<class T> inline command::Undetermined &PassBase<T>::create_command(comm
            Type::Dispatch,
            Type::DispatchIndirect,
            Type::Draw,
-           Type::DrawIndirect))
+           Type::DrawIndirect,
+           Type::TextureCopy))
   {
     is_empty_ = false;
   }
@@ -815,6 +828,8 @@ template<class T> void PassBase<T>::submit(command::RecordingState &state) const
       case command::Type::StencilSet:
         commands_[header.index].stencil_set.execute();
         break;
+      case command::Type::TextureCopy:
+        commands_[header.index].texture_copy.execute();
     }
   }
 
@@ -902,7 +917,9 @@ inline void PassBase<T>::draw(gpu::Batch *batch,
     return;
   }
   BLI_assert(batch);
-  BLI_assert(shader_);
+  if (!has_active_shader()) {
+    return;
+  }
   draw_commands_buf_.append_draw(headers_,
                                  commands_,
                                  batch,
@@ -935,7 +952,9 @@ inline void PassBase<T>::draw_expand(gpu::Batch *batch,
   if (instance_len == 0 || vertex_len == 0 || primitive_len == 0) {
     return;
   }
-  BLI_assert(shader_);
+  if (!has_active_shader()) {
+    return;
+  }
   draw_commands_buf_.append_draw(headers_,
                                  commands_,
                                  batch,
@@ -983,7 +1002,9 @@ inline void PassBase<T>::draw_indirect(gpu::Batch *batch,
                                        StorageBuffer<DrawCommand, true> &indirect_buffer,
                                        ResourceID res_id)
 {
-  BLI_assert(shader_);
+  if (!has_active_shader()) {
+    return;
+  }
   create_command(Type::DrawIndirect).draw_indirect = {batch, &indirect_buffer, res_id};
 }
 
@@ -1002,32 +1023,42 @@ inline void PassBase<T>::draw_procedural_indirect(
 
 template<class T> inline void PassBase<T>::dispatch(int group_len)
 {
-  BLI_assert(shader_);
+  if (!has_active_shader()) {
+    return;
+  }
   create_command(Type::Dispatch).dispatch = {int3(group_len, 1, 1)};
 }
 
 template<class T> inline void PassBase<T>::dispatch(int2 group_len)
 {
-  BLI_assert(shader_);
+  if (!has_active_shader()) {
+    return;
+  }
   create_command(Type::Dispatch).dispatch = {int3(group_len.x, group_len.y, 1)};
 }
 
 template<class T> inline void PassBase<T>::dispatch(int3 group_len)
 {
-  BLI_assert(shader_);
+  if (!has_active_shader()) {
+    return;
+  }
   create_command(Type::Dispatch).dispatch = {group_len};
 }
 
 template<class T> inline void PassBase<T>::dispatch(int3 *group_len)
 {
-  BLI_assert(shader_);
+  if (!has_active_shader()) {
+    return;
+  }
   create_command(Type::Dispatch).dispatch = {group_len};
 }
 
 template<class T>
 inline void PassBase<T>::dispatch(StorageBuffer<DispatchCommand> &indirect_buffer)
 {
-  BLI_assert(shader_);
+  if (!has_active_shader()) {
+    return;
+  }
   create_command(Type::DispatchIndirect).dispatch_indirect = {&indirect_buffer};
 }
 
@@ -1635,6 +1666,33 @@ inline void PassBase<T>::specialize_constant(gpu::Shader *shader,
 {
   create_command(Type::SpecializeConstant).specialize_constant = {
       shader, GPU_shader_get_constant(shader, constant_name), constant_value};
+}
+
+/** \} */
+
+/* -------------------------------------------------------------------- */
+/** \name Resource bind Implementation
+ * \{ */
+
+template<class T> inline void PassBase<T>::texture_copy(gpu::Texture *src, gpu::Texture *dst)
+{
+  create_command(Type::TextureCopy).texture_copy = {
+      .src = src, .dst = dst, .src_is_ref = false, .dst_is_ref = false};
+}
+template<class T> inline void PassBase<T>::texture_copy(gpu::Texture **src, gpu::Texture **dst)
+{
+  create_command(Type::TextureCopy).texture_copy = {
+      .src_ref = src, .dst_ref = dst, .src_is_ref = true, .dst_is_ref = true};
+}
+template<class T> inline void PassBase<T>::texture_copy(gpu::Texture **src, gpu::Texture *dst)
+{
+  create_command(Type::TextureCopy).texture_copy = {
+      .src_ref = src, .dst = dst, .src_is_ref = true, .dst_is_ref = false};
+}
+template<class T> inline void PassBase<T>::texture_copy(gpu::Texture *src, gpu::Texture **dst)
+{
+  create_command(Type::TextureCopy).texture_copy = {
+      .src = src, .dst_ref = dst, .src_is_ref = false, .dst_is_ref = true};
 }
 
 /** \} */

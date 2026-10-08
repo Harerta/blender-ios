@@ -3,24 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# SDL
-###########################################################################
-
-if(WITH_CYCLES_STANDALONE AND WITH_CYCLES_STANDALONE_GUI)
-  # We can't use the version from the Blender precompiled libraries because
-  # it does not include the video subsystem.
-  find_package(SDL2 REQUIRED)
-  set_and_warn_library_found("SDL" SDL2_FOUND WITH_CYCLES_STANDALONE_GUI)
-
-  if(SDL2_FOUND)
-    include_directories(
-      SYSTEM
-      ${SDL2_INCLUDE_DIRS}
-    )
-  endif()
-endif()
-
-###########################################################################
 # CUDA
 ###########################################################################
 
@@ -76,21 +58,26 @@ endif()
 ###########################################################################
 
 if(WITH_CYCLES_DEVICE_METAL)
-  find_library(METAL_LIBRARY Metal)
+  if(WITH_APPLE_CROSSPLATFORM)
+    # We will use platform Metal framework for Apple cross-platform builds (iOS).
+    set(METAL_FOUND ON)
+  else()
+    find_library(METAL_LIBRARY Metal)
 
-  # This file was added in the 12.0 SDK, use it as a way to detect the version.
-  if(METAL_LIBRARY)
-    if(EXISTS "${METAL_LIBRARY}/Headers/MTLFunctionStitching.h")
-      set(METAL_FOUND ON)
-    else()
-      message(STATUS "Metal version too old, must be SDK 12.0 or newer")
-      set(METAL_FOUND OFF)
+    # This file was added in the 12.0 SDK, use it as a way to detect the version.
+    if(METAL_LIBRARY)
+      if(EXISTS "${METAL_LIBRARY}/Headers/MTLFunctionStitching.h")
+        set(METAL_FOUND ON)
+      else()
+        message(STATUS "Metal version too old, must be SDK 12.0 or newer")
+        set(METAL_FOUND OFF)
+      endif()
     endif()
-  endif()
 
-  set_and_warn_library_found("Metal" METAL_FOUND WITH_CYCLES_DEVICE_METAL)
-  if(METAL_FOUND)
-    message(STATUS "Found Metal: ${METAL_LIBRARY}")
+    set_and_warn_library_found("Metal" METAL_FOUND WITH_CYCLES_DEVICE_METAL)
+    if(METAL_FOUND)
+      message(STATUS "Found Metal: ${METAL_LIBRARY}")
+    endif()
   endif()
 endif()
 
@@ -159,7 +146,7 @@ if(WITH_CYCLES_DEVICE_ONEAPI AND WITH_CYCLES_ONEAPI_BINARIES)
   # dependencies at the path:
   # <DPCPP_ROOT_DIRECTORY>/lib/igc/
   if(NOT IGC_INSTALL_DIR)
-    if (WIN32)
+    if(WIN32)
       set(IGC_INSTALL_DIR "${OCLOC_INSTALL_DIR}")
     else()
       get_filename_component(_sycl_compiler_root ${SYCL_COMPILER} DIRECTORY)
@@ -193,7 +180,7 @@ if(WITH_CYCLES_DEVICE_ONEAPI AND WITH_CYCLES_ONEAPI_BINARIES)
   if(NOT EXISTS ${OCLOC_INSTALL_DIR})
     set(OCLOC_FOUND OFF)
     set(_ocloc_missing_error_msg "oneAPI ocloc directory not found as ${OCLOC_INSTALL_DIR}.")
-  elseif (NOT EXISTS ${OCLOC_BINARY_FULL_FILEPATH})
+  elseif(NOT EXISTS ${OCLOC_BINARY_FULL_FILEPATH})
     set(OCLOC_FOUND OFF)
     set(_ocloc_missing_error_msg
       "oneAPI ocloc directory ${OCLOC_INSTALL_DIR} was found."

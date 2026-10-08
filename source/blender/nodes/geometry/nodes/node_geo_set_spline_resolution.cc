@@ -15,12 +15,17 @@ static void node_declare(NodeDeclarationBuilder &b)
 {
   b.use_custom_socket_order();
   b.allow_any_socket_order();
-  b.add_input<decl::Geometry>("Curve", "Geometry")
+  b.add_input<decl::Geometry>("Curve"_ustr, "Geometry"_ustr)
       .supported_type({GeometryComponent::Type::Curve, GeometryComponent::Type::GreasePencil})
       .description("Curves to change the resolution of");
-  b.add_output<decl::Geometry>("Curve", "Geometry").propagate_all().align_with_previous();
-  b.add_input<decl::Bool>("Selection").default_value(true).hide_value().field_on_all();
-  b.add_input<decl::Int>("Resolution").min(1).default_value(12).field_on_all();
+  b.add_output<decl::Geometry>("Curve"_ustr, "Geometry"_ustr)
+      .propagate_all_geometry()
+      .align_with_previous();
+  b.add_input<decl::Bool>("Selection"_ustr)
+      .default_value(true)
+      .hide_value()
+      .evaluated_geometry_field();
+  b.add_input<decl::Int>("Resolution"_ustr).min(1).default_value(12).evaluated_geometry_field();
 }
 
 static void set_curve_resolution(bke::CurvesGeometry &curves,
@@ -79,7 +84,8 @@ static void node_register()
 {
   static bke::bNodeType ntype;
 
-  geo_node_type_base(&ntype, "GeometryNodeSetSplineResolution", GEO_NODE_SET_SPLINE_RESOLUTION);
+  geo_node_type_base(
+      &ntype, "GeometryNodeSetSplineResolution"_ustr, GEO_NODE_SET_SPLINE_RESOLUTION);
   ntype.ui_name = "Set Spline Resolution";
   ntype.ui_description =
       "Control how many evaluated points should be generated on every curve segment";
@@ -87,6 +93,7 @@ static void node_register()
   ntype.nclass = NODE_CLASS_GEOMETRY;
   ntype.geometry_node_execute = node_geo_exec;
   ntype.declare = node_declare;
+  ntype.default_width = bke::NodeWidth::_160;
   bke::node_register_type(ntype);
 }
 NOD_REGISTER_NODE(node_register)

@@ -39,6 +39,8 @@
 #include "BKE_screen.hh"
 #include "BKE_workspace.hh"
 
+#include "PRF_profile.hh"
+
 #include "WM_api.hh"
 #include "WM_keymap.hh"
 #include "WM_message.hh"
@@ -185,7 +187,7 @@ static void window_manager_blend_read_data(BlendDataReader *reader, ID *id)
 
     /* Multi-view always falls back to anaglyph at file opening
      * otherwise quad-buffer saved files can break Blender. */
-    if (win.stereo3d_format) {
+    if (win.stereo3d_format && win.stereo3d_format->display_mode == S3D_DISPLAY_PAGEFLIP) {
       win.stereo3d_format->display_mode = S3D_DISPLAY_ANAGLYPH;
     }
     win.runtime = MEM_new<bke::WindowRuntime>(__func__);
@@ -195,7 +197,7 @@ static void window_manager_blend_read_data(BlendDataReader *reader, ID *id)
 
   wm->xr.runtime = nullptr;
 
-  wm->init_flag = 0;
+  wm->init_flag = eWM_InitFlag{};
   wm->op_undo_depth = 0;
   wm->extensions_updates = WM_EXTENSIONS_UPDATE_UNSET;
   wm->extensions_blocked = 0;
@@ -361,8 +363,8 @@ void WM_operator_stack_clear(wmWindowManager *wm, const Set<wmOperatorType *> &t
   bool any_removed = false;
   for (wmOperator &op : wm->runtime->operators.items_mutable()) {
     if (types.contains(op.type)) {
-      WM_operator_free(&op);
       BLI_remlink(&wm->runtime->operators, &op);
+      WM_operator_free(&op);
       any_removed = true;
     }
   }
@@ -476,7 +478,7 @@ void WM_check(bContext *C)
     CTX_wm_manager_set(C, wm);
   }
 
-  if (wm == nullptr || BLI_listbase_is_empty(&wm->windows)) {
+  if (wm == nullptr || wm->windows.is_empty()) {
     return;
   }
 
@@ -514,7 +516,7 @@ void wm_clear_default_size(bContext *C)
     CTX_wm_manager_set(C, wm);
   }
 
-  if (wm == nullptr || BLI_listbase_is_empty(&wm->windows)) {
+  if (wm == nullptr || wm->windows.is_empty()) {
     return;
   }
 
@@ -593,12 +595,32 @@ void wm_close_and_free(bContext *C, wmWindowManager *wm)
   MEM_delete(wm->runtime);
 }
 
-void WM_main(bContext *C)
+void WM_main_entry(bContext *C)
 {
+  PRF_scope(ProfileCategory::Core);
   /* Single refresh before handling events.
    * This ensures we don't run operators before the depsgraph has been evaluated. */
   wm_event_do_refresh_wm_and_depsgraph(C);
+}
 
+void WM_main_loop_body(bContext *C)
+{
+  /* Get events from ghost, handle window events, add to window queues. */
+  wm_window_events_process(C);
+
+  /* Per window, all events to the window, screen, area and region handlers. */
+  wm_event_do_handlers(C);
+
+  /* Events have left notes about changes, we handle and cache it. */
+  wm_event_do_notifiers(C);
+
+  /* Execute cached changes draw. */
+  wm_draw_update(C);
+}
+
+void WM_main(bContext *C)
+{
+  WM_main_entry(C);
   while (true) {
 
     /* Get events from ghost, handle window events, add to window queues. */
@@ -612,6 +634,8 @@ void WM_main(bContext *C)
 
     /* Execute cached changes draw. */
     wm_draw_update(C);
+
+    PRF_frame_mark;
   }
 }
 

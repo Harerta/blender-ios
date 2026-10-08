@@ -27,36 +27,39 @@ static void node_declare(NodeDeclarationBuilder &b)
 {
   b.use_custom_socket_order();
   b.allow_any_socket_order();
-  b.add_input<decl::Geometry>("Mesh")
+  b.add_input<decl::Geometry>("Mesh"_ustr)
       .supported_type(GeometryComponent::Type::Mesh)
       .description("Mesh to subdivide");
-  b.add_output<decl::Geometry>("Mesh").propagate_all().align_with_previous();
-  b.add_input<decl::Int>("Level").default_value(1).min(0).max(6);
-  b.add_input<decl::Float>("Edge Crease")
+  b.add_output<decl::Geometry>("Mesh"_ustr).propagate_all_geometry().align_with_previous();
+  b.add_input<decl::Int>("Level"_ustr).default_value(1).min(0).max(6);
+  b.add_input<decl::Float>("Edge Crease"_ustr)
       .default_value(0.0f)
       .min(0.0f)
       .max(1.0f)
       .subtype(PROP_FACTOR)
-      .field_on_all();
-  b.add_input<decl::Float>("Vertex Crease")
+      .evaluated_geometry_field();
+  b.add_input<decl::Float>("Vertex Crease"_ustr)
       .default_value(0.0f)
       .min(0.0f)
       .max(1.0f)
       .subtype(PROP_FACTOR)
-      .field_on_all();
-  b.add_input<decl::Bool>("Limit Surface")
+      .evaluated_geometry_field();
+  b.add_input<decl::Bool>("Limit Surface"_ustr)
       .default_value(true)
       .description(
           "Place vertices at the surface that would be produced with infinite "
           "levels of subdivision (smoothest possible shape)");
-  b.add_input<decl::Int>("Quality").default_value(3).min(1).max(10).description(
-      "Accuracy of vertex positions, lower value is faster but less precise.");
-  b.add_input<decl::Menu>("UV Smooth")
+  b.add_input<decl::Int>("Quality"_ustr)
+      .default_value(3)
+      .min(1)
+      .max(10)
+      .description("Accuracy of vertex positions, lower value is faster but less precise.");
+  b.add_input<decl::Menu>("UV Smooth"_ustr)
       .static_items(rna_enum_subdivision_uv_smooth_items)
       .default_value(SUBSURF_UV_SMOOTH_PRESERVE_BOUNDARIES)
       .optional_label()
       .description("Controls how smoothing is applied to UVs");
-  b.add_input<decl::Menu>("Boundary Smooth")
+  b.add_input<decl::Menu>("Boundary Smooth"_ustr)
       .static_items(rna_enum_subdivision_boundary_smooth_items)
       .default_value(SUBSURF_BOUNDARY_SMOOTH_ALL)
       .optional_label()
@@ -249,7 +252,7 @@ static void node_register()
 {
   static bke::bNodeType ntype;
 
-  geo_node_type_base(&ntype, "GeometryNodeSubdivisionSurface", GEO_NODE_SUBDIVISION_SURFACE);
+  geo_node_type_base(&ntype, "GeometryNodeSubdivisionSurface"_ustr, GEO_NODE_SUBDIVISION_SURFACE);
   ntype.ui_name = "Subdivision Surface";
   ntype.ui_description =
       "Divide mesh faces to form a smooth surface, using the Catmull-Clark subdivision method";
@@ -258,7 +261,7 @@ static void node_register()
   ntype.declare = node_declare;
   ntype.geometry_node_execute = node_geo_exec;
   ntype.initfunc = node_init;
-  bke::node_type_size_preset(ntype, bke::eNodeSizePreset::Middle);
+  ntype.default_width = bke::NodeWidth::_160;
   bke::node_type_storage(ntype,
                          "NodeGeometrySubdivisionSurface",
                          node_free_standard_storage,

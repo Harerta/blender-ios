@@ -7,6 +7,10 @@
 #  include <algorithm>
 #  include <mutex>
 
+#  ifdef WITH_APPLE_CROSSPLATFORM
+#    include <os/proc.h>
+#  endif
+
 #  include "device/metal/queue.h"
 
 #  include "device/metal/device_impl.h"
@@ -198,8 +202,13 @@ MetalDeviceQueue::~MetalDeviceQueue()
 {
   /* Tidying up here isn't really practical - we should expect and require the work
    * queue to be empty here. */
-  assert(mtlCommandBuffer_ == nil);
-  assert(command_buffers_submitted_ == command_buffers_completed_);
+  if (mtlCommandBuffer_) {
+    /* GPU error may leave a command buffer in-flight. Wait for it and clean up
+     * instead of asserting, to prevent a hard crash on iOS GPU timeouts. */
+    [mtlCommandBuffer_ waitUntilCompleted];
+    [mtlCommandBuffer_ release];
+    mtlCommandBuffer_ = nil;
+  }
 
   close_compute_encoder();
   close_blit_encoder();
@@ -267,6 +276,41 @@ int MetalDeviceQueue::num_concurrent_states(const size_t state_size) const
 {
   size_t state_count = 4194304;
 
+#  ifdef WITH_APPLE_CROSSPLATFORM
+  /* iOS GPU watchdog kills command buffers exceeding ~2-5 seconds.
+   * Hard-cap state count to keep per-dispatch GPU work within the timeout,
+   * then further reduce based on available memory. */
+  {
+    const size_t ios_max_state_count = 131072;
+    state_count = std::min(state_count, ios_max_state_count);
+
+    size_t proc_avail = (size_t)os_proc_available_memory();
+    size_t gpu_working_set = (size_t)[metal_device_->mtlDevice recommendedMaxWorkingSetSize];
+    size_t usable = std::min(proc_avail, gpu_working_set) / 2;
+    if (usable > stats_.mem_used) {
+      size_t headroom = usable - stats_.mem_used;
+      size_t safe_count = headroom / state_size;
+      safe_count = std::min(safe_count, ios_max_state_count);
+      if (safe_count >= 65536 && safe_count < state_count) {
+        metal_printf("iOS: Reducing state count %zu -> %zu (avail=%.0fMB, used=%.0fMB)",
+                     state_count,
+                     safe_count,
+                     double(usable) / (1024 * 1024),
+                     double(stats_.mem_used) / (1024 * 1024));
+        state_count = safe_count;
+      }
+    }
+    else {
+      /* Very tight memory — use minimum viable state count. */
+      metal_printf("iOS: Memory critically low, using minimum state count 65536");
+      state_count = 65536;
+    }
+
+    metal_printf("iOS: Using state count %zu", state_count);
+  }
+  return state_count;
+#  endif
+
   /* Increasing the state count doesn't notably benefit M1-family systems. */
   if (MetalInfo::get_apple_gpu_architecture(metal_device_->mtlDevice) != APPLE_M1) {
     const size_t max_recommended_working_set =
@@ -274,7 +318,7 @@ int MetalDeviceQueue::num_concurrent_states(const size_t state_size) const
 
     /* Only use 90% of available working set for safety. */
     size_t percent = 90;
-    if (auto str = getenv("CYCLES_METAL_WORKING_SET_PERCENT")) {
+    if (auto *str = getenv("CYCLES_METAL_WORKING_SET_PERCENT")) {
       percent = atoi(str);
     }
 
@@ -302,7 +346,7 @@ int MetalDeviceQueue::num_concurrent_states(const size_t state_size) const
         /* Aggressive safety margin: only grow if it leaves us at < 50% max working set
          * utilization. */
         size_t grow_percent = 50;
-        if (auto str = getenv("CYCLES_METAL_GROW_PERCENT")) {
+        if (auto *str = getenv("CYCLES_METAL_GROW_PERCENT")) {
           grow_percent = atoi(str);
         }
 
@@ -479,10 +523,7 @@ bool MetalDeviceQueue::enqueue(DeviceKernel kernel,
       dynamic_bytes_written = round_up(dynamic_bytes_written, size_in_bytes);
       memcpy(dynamic_args + dynamic_bytes_written, args.values[i], size_in_bytes);
       if (args.types[i] == DeviceKernelArguments::POINTER) {
-        if (id<MTLBuffer> buffer = patch_resource(dynamic_args + dynamic_bytes_written)) {
-          [mtlComputeCommandEncoder useResource:buffer
-                                          usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-        }
+        patch_resource(dynamic_args + dynamic_bytes_written);
       }
       dynamic_bytes_written += size_in_bytes;
     }
@@ -511,25 +552,15 @@ bool MetalDeviceQueue::enqueue(DeviceKernel kernel,
       assert(ancillary_index == ANCILLARY_SLOT_COUNT);
     }
 
-    /* Encode ancillaries */
-    if (metal_device_->use_metalrt) {
-      for (int table = 0; table < METALRT_TABLE_NUM; table++) {
-        if (active_pipeline.intersection_func_table[table]) {
-          [active_pipeline.intersection_func_table[table]
-              setBuffer:metal_device_->launch_params_buffer
-                 offset:0
-                atIndex:1];
-          [mtlComputeCommandEncoder useResource:active_pipeline.intersection_func_table[table]
-                                          usage:MTLResourceUsageRead];
-        }
-      }
-    }
-
     [mtlComputeCommandEncoder setBytes:dynamic_args length:dynamic_bytes_written atIndex:0];
     [mtlComputeCommandEncoder setBuffer:metal_device_->launch_params_buffer offset:0 atIndex:1];
     [mtlComputeCommandEncoder setBytes:ancillary_args length:sizeof(ancillary_args) atIndex:2];
 
-    if (metal_device_->use_metalrt && device_kernel_has_intersection(kernel)) {
+    /* Fallback path in case residency sets aren't supported:
+     * Call useResource for MetalRT resources not covered by prepare_resources(). */
+    if (!metal_device_->mtlResidencySet_enabled && metal_device_->use_metalrt &&
+        device_kernel_has_intersection(kernel))
+    {
       if (@available(macos 12.0, *)) {
 
         if (id<MTLAccelerationStructure> accel_struct = metal_device_->accel_struct) {
@@ -542,6 +573,13 @@ bool MetalDeviceQueue::enqueue(DeviceKernel kernel,
           [mtlComputeCommandEncoder useResources:metal_device_->unique_blas_array.data()
                                            count:metal_device_->unique_blas_array.size()
                                            usage:MTLResourceUsageRead];
+        }
+      }
+
+      for (int table = 0; table < METALRT_TABLE_NUM; table++) {
+        if (active_pipeline.intersection_func_table[table]) {
+          [mtlComputeCommandEncoder useResource:active_pipeline.intersection_func_table[table]
+                                          usage:MTLResourceUsageRead];
         }
       }
     }
@@ -587,6 +625,8 @@ bool MetalDeviceQueue::enqueue(DeviceKernel kernel,
     MTLSize size_threads_per_threadgroup = MTLSizeMake(num_threads_per_block, 1, 1);
     [mtlComputeCommandEncoder dispatchThreads:size_threads_per_dispatch
                         threadsPerThreadgroup:size_threads_per_threadgroup];
+
+    metal_device_->prepare_residency();
 
     [mtlCommandBuffer_ addCompletedHandler:^(id<MTLCommandBuffer> command_buffer) {
       /* Enhanced command buffer errors */
@@ -634,7 +674,7 @@ bool MetalDeviceQueue::enqueue(DeviceKernel kernel,
             if (IntegratorQueueCounter *queue_counter = (IntegratorQueueCounter *)
                                                             it.first->host_pointer)
             {
-              for (int i = 0; i < DEVICE_KERNEL_INTEGRATOR_NUM; i++) {
+              for (int i = 0; i < DEVICE_GPU_KERNEL_INTEGRATOR_NUM; i++) {
                 printf("%s%d", i == 0 ? "" : ",", queue_counter->num_queued[i]);
               }
             }
@@ -697,7 +737,26 @@ bool MetalDeviceQueue::synchronize()
 
       [mtlCommandBuffer_ encodeSignalEvent:shared_event_ value:shared_event_id_];
       [mtlCommandBuffer_ commit];
+
+      /* Use a timeout on iOS to avoid hanging forever on GPU watchdog kills. */
+#  ifdef WITH_APPLE_CROSSPLATFORM
+      const long wait_result = dispatch_semaphore_wait(
+          wait_semaphore_, dispatch_time(DISPATCH_TIME_NOW, 30LL * NSEC_PER_SEC));
+      if (wait_result != 0) {
+        metal_printf("iOS: Command buffer wait timed out (30s), possible GPU watchdog kill");
+        [mtlCommandBuffer_ waitUntilCompleted];
+      }
+#  else
       dispatch_semaphore_wait(wait_semaphore_, DISPATCH_TIME_FOREVER);
+#  endif
+
+      /* Check for GPU errors (e.g. timeout, recovery) before releasing. */
+      if (mtlCommandBuffer_.status == MTLCommandBufferStatusError) {
+        metal_printf("GPU command buffer error (status=%d)", int(mtlCommandBuffer_.status));
+        if (!metal_device_->have_error()) {
+          metal_device_->set_error("GPU command buffer execution failed");
+        }
+      }
 
       [mtlCommandBuffer_ release];
 
@@ -787,8 +846,13 @@ void *MetalDeviceQueue::copy_from_device_synchronized(device_memory &mem,
   return (d_ptr) ? reinterpret_cast<MetalDevice::MetalMem *>(d_ptr)->hostPtr : nullptr;
 }
 
-void MetalDeviceQueue::prepare_resources(DeviceKernel /*kernel*/)
+void MetalDeviceQueue::prepare_resources()
 {
+  if (metal_device_->mtlResidencySet_enabled) {
+    /* All resources are already resident — skip per-encoder useResource calls. */
+    return;
+  }
+
   std::lock_guard<std::recursive_mutex> lock(metal_device_->metal_mem_map_mutex);
 
   /* declare resource usage */
@@ -816,7 +880,7 @@ void MetalDeviceQueue::prepare_resources(DeviceKernel /*kernel*/)
 
 id<MTLComputeCommandEncoder> MetalDeviceQueue::get_compute_encoder(DeviceKernel kernel)
 {
-  bool concurrent = int(kernel) < int(DEVICE_KERNEL_INTEGRATOR_NUM);
+  bool concurrent = int(kernel) < int(DEVICE_GPU_KERNEL_INTEGRATOR_NUM);
 
   if (profiling_enabled_) {
     /* Close the current encoder to ensure we're able to capture per-encoder timing data. */
@@ -828,7 +892,7 @@ id<MTLComputeCommandEncoder> MetalDeviceQueue::get_compute_encoder(DeviceKernel 
                                                         MTLDispatchTypeSerial)
     {
       /* declare usage of MTLBuffers etc */
-      prepare_resources(kernel);
+      prepare_resources();
 
       return mtlComputeEncoder_;
     }
@@ -865,7 +929,7 @@ id<MTLComputeCommandEncoder> MetalDeviceQueue::get_compute_encoder(DeviceKernel 
   [mtlComputeEncoder_ setLabel:@(device_kernel_as_string(kernel))];
 
   /* declare usage of MTLBuffers etc */
-  prepare_resources(kernel);
+  prepare_resources();
 
   return mtlComputeEncoder_;
 }

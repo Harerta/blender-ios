@@ -220,6 +220,13 @@ enum wmEventType : int16_t {
   EVT_LEFTBRACKETKEY = 0x00eb,  /* 235 */
   EVT_RIGHTBRACKETKEY = 0x00ec, /* 236 */
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* TODO(iOS IOS-004): Temporary event kind for routing UITextInput callbacks from the on-screen
+   * keyboard into the WM. Replace with a first-class wmEvent_TextInput kind. See
+   * doc/ios/known_issues.md. */
+  EVT_TEXTEDIT = 0x0fe, /* 254 */
+#endif
+
 /* Maximum keyboard value (inclusive). */
 #define _EVT_KEYBOARD_MAX 0x00ff /* 255 */
 
@@ -333,6 +340,21 @@ enum wmEventType : int16_t {
 
 #define _NDOF_MAX NDOF_BUTTON_SAVE_V3
 #define _NDOF_BUTTON_MAX NDOF_BUTTON_SAVE_V3
+
+/* Minimum touch value (inclusive). */
+#define _EVT_TOUCH_MIN 0x0200
+
+  TOUCH_TWO_FINGER_TAP = 0x0200,   /* 512 */
+  TOUCH_THREE_FINGER_TAP = 0x0201, /* 513 */
+  TOUCH_FOUR_FINGER_TAP = 0x0202,  /* 514 */
+  /* Edge-swap. */
+  TOUCH_EDGE_SWIPE_IN_LEFT = 0x0203,  /* 515 */
+  TOUCH_EDGE_SWIPE_IN_RIGHT = 0x0204, /* 516 */
+
+/* Maximum mouse value (inclusive). */
+#define _EVT_TOUCH_MAX 0x0204 /* 516 */
+
+#define ISTOUCH(event_type) ((event_type) >= _EVT_TOUCH_MIN && (event_type) <= _EVT_TOUCH_MAX)
 
   /* ********** End of Input devices. ********** */
 

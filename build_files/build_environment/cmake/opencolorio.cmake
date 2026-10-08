@@ -37,6 +37,19 @@ set(OPENCOLORIO_EXTRA_ARGS
   -Dpybind11_ROOT=${LIBDIR}/pybind11
 )
 
+if(WITH_APPLE_CROSSPLATFORM)
+  # Use iOS utility to set some env vars to help us build for iOS
+  include(cmake/ios_defines.cmake)
+  ios_get_dependency_env_vars(IMATH)
+  
+  set(OPENCOLORIO_EXTRA_ARGS
+    ${OPENCOLORIO_EXTRA_ARGS}
+    -DOCIO_BUILD_PYTHON=OFF
+    -DOCIO_USE_HEADLESS=ON
+    ${IOSDEP_DEFINES}
+  )
+endif()
+
 if(APPLE)
   set(OPENCOLORIO_EXTRA_ARGS
     ${OPENCOLORIO_EXTRA_ARGS}
@@ -70,6 +83,12 @@ else()
   set(OPENCOLORIO_EXTRA_ARGS
     ${OPENCOLORIO_EXTRA_ARGS}
   )
+endif()
+
+if(WITH_APPLE_CROSSPLATFORM)
+  set(OCIO_PATCH PATCH_COMMAND ${PATCH_CMD} -p 1 -N -b -d ${BUILD_DIR}/opencolorio/src/external_opencolorio < ${PATCH_DIR}/opencolorio_ios.diff)
+else()
+  set(OCIO_PATCH)
 endif()
 
 ExternalProject_Add(external_opencolorio
@@ -127,7 +146,9 @@ if(WIN32)
       COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${LIBDIR}/opencolorio/lib/site-packages
         ${HARVEST_TARGET}/opencolorio/lib/site-packages-debug
-
+      COMMAND ${CMAKE_COMMAND} -E copy
+        ${LIBDIR}/opencolorio/lib/cmake/OpenColorIO/OpenColorIOTargets-debug.cmake
+        ${HARVEST_TARGET}/opencolorio/lib/cmake/OpenColorIO/OpenColorIOTargets-debug.cmake
       DEPENDEES install
     )
   endif()
@@ -147,11 +168,16 @@ else()
   )
 
   harvest(external_opencolorio opencolorio/include opencolorio/include "*.h")
+  # Cmake files first because harvest_rpath_lib edits them.
+  harvest(external_opencolorio opencolorio/lib/cmake/OpenColorIO opencolorio/lib/cmake/OpenColorIO "*.cmake")
   harvest_rpath_lib(external_opencolorio opencolorio/lib opencolorio/lib "*${SHAREDLIBEXT}*")
-  harvest_rpath_python(
-    external_opencolorio
-    opencolorio/lib/python${PYTHON_SHORT_VERSION}
-    python/lib/python${PYTHON_SHORT_VERSION}
-    "*"
-  )
+  # OCIO_BUILD_PYTHON currently set to OFF for iOS
+  if(NOT WITH_APPLE_CROSSPLATFORM)
+    harvest_rpath_python(
+      external_opencolorio
+      opencolorio/lib/python${PYTHON_SHORT_VERSION}
+      python/lib/python${PYTHON_SHORT_VERSION}
+      "*"
+    )
+  endif()
 endif()

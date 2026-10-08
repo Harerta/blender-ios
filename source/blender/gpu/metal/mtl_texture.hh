@@ -19,9 +19,7 @@
 #include <string>
 #include <thread>
 
-#include <Cocoa/Cocoa.h>
 #include <Metal/Metal.h>
-#include <QuartzCore/QuartzCore.h>
 
 @class CAMetalLayer;
 @class MTLCommandQueue;
@@ -175,7 +173,7 @@ struct MTLSamplerState {
   }
 };
 
-const MTLSamplerState DEFAULT_SAMPLER_STATE = {GPUSamplerState::default_sampler() /*, 0, 9999 */};
+const MTLSamplerState DEFAULT_SAMPLER_STATE = {GPUSamplerState::default_sampler() /* , 0, 9999 */};
 
 class MTLTexture : public Texture {
   friend class MTLContext;
@@ -292,11 +290,11 @@ class MTLTexture : public Texture {
                   GPUPixelBuffer *pixbuf) override;
 
   void generate_mipmap() override;
-  void copy_to(Texture *dst) override;
+  void copy_to(Texture *dst, IndexRange mip_levels) override;
   void clear(const double4 data) override;
   void swizzle_set(const char swizzle_mask[4]) override;
   void mip_range_set(int min, int max) override;
-  void *read(int mip, eGPUDataFormat type) override;
+  void read(int mip, eGPUDataFormat type, void *data) override;
 
   bool is_format_srgb();
   bool texture_is_baked();
@@ -602,7 +600,9 @@ inline bool mtl_format_is_writable(MTLPixelFormat format)
     case MTLPixelFormatDepth32Float:
     case MTLPixelFormatDepth32Float_Stencil8:
     case MTLPixelFormatBGR10A2Unorm:
+#if MTL_BACKEND_SUPPORTS_D24_S8_SYMBOLS
     case MTLPixelFormatDepth24Unorm_Stencil8:
+#endif
       return false;
     default:
       return true;
@@ -633,7 +633,9 @@ inline MTLPixelFormat mtl_format_get_writeable_view_format(MTLPixelFormat format
       /* No alternative mirror format. This should not be used for
        * manual data upload */
       return MTLPixelFormatInvalid;
+#if MTL_BACKEND_SUPPORTS_D24_S8_SYMBOLS
     case MTLPixelFormatDepth24Unorm_Stencil8:
+#endif
       /* No direct format, but we'll just mirror the bytes -- `Uint`
        * should ensure bytes are not re-normalized or manipulated */
       // return MTLPixelFormatR32Uint;
@@ -664,8 +666,8 @@ inline MTLTextureUsage mtl_usage_from_gpu(eGPUTextureUsage usage)
   if (usage & GPU_TEXTURE_USAGE_FORMAT_VIEW) {
     mtl_usage = mtl_usage | MTLTextureUsagePixelFormatView;
   }
-#if defined(MAC_OS_VERSION_14_0)
-  if (@available(macOS 14.0, *)) {
+#if defined(MAC_OS_VERSION_14_0) || defined(IPHONE_OS_VERSION_17_0)
+  if (@available(macOS 14.0, ios 17.0, *)) {
     if (usage & GPU_TEXTURE_USAGE_ATOMIC) {
       mtl_usage = mtl_usage | MTLTextureUsageShaderAtomic;
     }

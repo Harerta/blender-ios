@@ -3,7 +3,23 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 if(WIN32)
-  set(CONFIGURE_ENV ${CONFIGURE_ENV_MSVC})
+  set(FRIBIDI_CONFIGURE_ENV ${CONFIGURE_ENV_MSVC})
+else()
+  set(FRIBIDI_CONFIGURE_ENV ${CONFIGURE_ENV})
+endif()
+
+set(FRIBIDI_EXTRA_OPTIONS
+  -Ddocs=false
+)
+
+if(WITH_APPLE_CROSSPLATFORM)
+  if(NOT EXISTS "${MESON_APPLE_CONFIGURATION_FILE}")
+    message(FATAL_ERROR "Fribidi requires cross=compilation config file at: '${MESON_APPLE_CONFIGURATION_FILE}'")
+  endif()
+
+  set(CROSS_COMPILE_COMMANDS --cross-file ${MESON_APPLE_CONFIGURATION_FILE})
+else()
+  set(CROSS_COMPILE_COMMANDS)
 endif()
 
 ExternalProject_Add(external_fribidi
@@ -12,13 +28,14 @@ ExternalProject_Add(external_fribidi
   DOWNLOAD_DIR ${DOWNLOAD_DIR}
   PREFIX ${BUILD_DIR}/fribidi
 
-  CONFIGURE_COMMAND ${CONFIGURE_ENV} &&
+  CONFIGURE_COMMAND ${FRIBIDI_CONFIGURE_ENV} &&
     ${MESON} setup
       --prefix ${LIBDIR}/fribidi
-      ${MESON_BUILD_TYPE}
-      -Ddocs=false
-      --default-library static
       --libdir lib
+      --default-library static
+      ${MESON_BUILD_TYPE}
+      ${FRIBIDI_EXTRA_OPTIONS}
+      ${CROSS_COMPILE_COMMANDS}
       ${BUILD_DIR}/fribidi/src/external_fribidi-build
       ${BUILD_DIR}/fribidi/src/external_fribidi
 
@@ -27,12 +44,15 @@ ExternalProject_Add(external_fribidi
   INSTALL_DIR ${LIBDIR}/fribidi
 )
 
-add_dependencies(
-  external_fribidi
-  external_python
-  # Needed for `MESON`.
-  external_python_site_packages
-)
+# NOTE: For Apple-crossplatform builds, we will rely on host python being built for cross-compilation
+if(NOT WITH_APPLE_CROSSPLATFORM)
+  add_dependencies(
+    external_fribidi
+    external_python
+    # Needed for `MESON`.
+    external_python_site_packages
+  )
+endif()
 
 if(WIN32)
   if(BUILD_MODE STREQUAL Release)

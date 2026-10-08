@@ -29,10 +29,15 @@
 #include "gpu_capabilities_private.hh"
 #include "gpu_platform_private.hh"
 
-#include <Cocoa/Cocoa.h>
+#ifdef WITH_APPLE_CROSSPLATFORM
+#  include <Foundation/Foundation.h>
+#  include <sys/sysctl.h>
+#else
+#  include <Cocoa/Cocoa.h>
+#endif
+
 #include <Metal/Metal.h>
 #include <QuartzCore/QuartzCore.h>
-#include <sys/sysctl.h>
 
 namespace blender::gpu {
 
@@ -101,7 +106,7 @@ Texture *MTLBackend::texture_alloc(const char *name)
 
 TexturePool *MTLBackend::texturepool_alloc()
 {
-  if (G.debug & G_DEBUG_GPU_NO_TEXTURE_POOL) {
+  if (GCaps.texture_pool_workaround) {
     return new TexturePoolImpl();
   }
   return new MTLTexturePool();
@@ -263,6 +268,9 @@ void MTLBackend::platform_init(MTLContext *ctx)
            version,
            architecture_type);
 
+  GPG.devices.append(
+      {.identifier = "METAL", .index = 0, .vendor_id = 0, .device_id = 0, .name = renderer});
+
   /* UUID is not supported on Metal. */
   GPG.device_uuid.reinitialize(0);
 
@@ -373,6 +381,10 @@ static int get_num_efficiency_cpu_cores(id<MTLDevice> device)
 
 bool MTLBackend::metal_is_supported()
 {
+#if MTL_BACKEND_ALWAYS_SUPPORTED
+  return true;
+#endif
+
   /* Device compatibility information using Metal Feature-set tables.
    * See: https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf */
 
@@ -392,6 +404,7 @@ bool MTLBackend::metal_is_supported()
 
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
 
+#if MTL_BACKEND_LOW_POWER_GPU_SUPPORT
   /* Debug: Enable low power GPU with Environment Var: METAL_FORCE_INTEL. */
   static const char *forceIntelStr = getenv("METAL_FORCE_INTEL");
   bool forceIntel = forceIntelStr ? (atoi(forceIntelStr) != 0) : false;
@@ -404,6 +417,7 @@ bool MTLBackend::metal_is_supported()
       }
     }
   }
+#endif
 
   /* Metal Viewport requires argument buffer tier-2 support and Barycentric Coordinates.
    * These are available on most hardware configurations supporting Metal 2.2. */
@@ -503,14 +517,8 @@ void MTLBackend::capabilities_init(MTLContext *ctx)
   GCaps.max_textures = (MTLBackend::capabilities.supports_family_mac1) ?
                            128 :
                            (([device supportsFamily:MTLGPUFamilyApple4]) ? 96 : 31);
-  if (GCaps.max_textures <= 32) {
-    BLI_assert(false);
-  }
-  GCaps.max_samplers = (MTLBackend::capabilities.supports_argument_buffers_tier2) ? 1024 : 16;
-
-  GCaps.max_textures_vert = GCaps.max_textures;
-  GCaps.max_textures_geom = 0; /* N/A geometry shaders not supported. */
-  GCaps.max_textures_frag = GCaps.max_textures;
+  /* Hardcoded limit due to ShaderInterface::enabled_tex_mask_. */
+  GCaps.max_textures = std::min(GCaps.max_textures, 64);
 
   GCaps.max_images = GCaps.max_textures;
 
@@ -530,10 +538,17 @@ void MTLBackend::capabilities_init(MTLContext *ctx)
 
   GCaps.geometry_shader_support = false;
 
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* TODO(iOS IOS-002): Unlimited concurrent Metal shader compilation triggers jetsam on older
+   * iPads. Fixed cap for now; should be dynamic based on thermal + memory state. See
+   * doc/ios/known_issues.md. */
+  GCaps.max_parallel_compilations = 2;
+#else
   /* Compile shaders on performance cores but leave one free so UI is still responsive.
    * Also respect command line option to reduce number of threads. */
   GCaps.max_parallel_compilations = std::min(BLI_system_thread_count(),
                                              MTLBackend::capabilities.num_performance_cores - 1);
+#endif
 
   /* Maximum buffer bindings: 31. Consider required slot for uniforms/UBOs/Vertex attributes.
    * Can use argument buffers if a higher limit is required. */
@@ -579,6 +594,11 @@ void MTLBackend::capabilities_init(MTLContext *ctx)
     MTLBackend::capabilities.supports_texture_gather = false;
     MTLBackend::capabilities.supports_texture_atomics = false;
     MTLBackend::capabilities.supports_native_tile_inputs = false;
+    GCaps.texture_pool_workaround = true;
+  }
+
+  if (G.debug & G_DEBUG_GPU_NO_TEXTURE_POOL) {
+    GCaps.texture_pool_workaround = true;
   }
 }
 

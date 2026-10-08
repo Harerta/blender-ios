@@ -107,6 +107,13 @@ static wmOperatorStatus viewmove_invoke_impl(bContext *C,
 
 static wmOperatorStatus viewmove_invoke(bContext *C, wmOperator *op, const wmEvent *event)
 {
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* Pan with two-finger (+ shift on desktop keymap) or three-finger gesture on iOS. */
+  if (!(event->flag & (WM_EVENT_MULTITOUCH_TWO_FINGERS | WM_EVENT_MULTITOUCH_THREE_FINGERS))) {
+    return OPERATOR_PASS_THROUGH;
+  }
+#endif
+
   return view3d_navigate_invoke_impl(C, op, event, &ViewOpsType_move);
 }
 

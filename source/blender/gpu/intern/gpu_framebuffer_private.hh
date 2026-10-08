@@ -180,6 +180,19 @@ class FrameBuffer {
     if (!equals_v4v4_int(viewport_[0], viewport)) {
       copy_v4_v4_int(viewport_[0], viewport);
       dirty_state_ = true;
+#ifdef WITH_APPLE_CROSSPLATFORM
+      /* TODO(iOS IOS-003): Selecting the 2D Full Canvas window produces a viewport with a -1
+       * origin; the real fix belongs in the editors layer. See doc/ios/known_issues.md. */
+      if (viewport_[0][0] < 0 || viewport_[0][1] < 0) {
+        printf("Invalid viewport detected: %d,%d - %dx%d\n",
+               viewport_[0][0],
+               viewport_[0][1],
+               viewport_[0][2],
+               viewport_[0][3]);
+        viewport_[0][0] = max_ii(viewport_[0][0], 0);
+        viewport_[0][1] = max_ii(viewport_[0][1], 0);
+      }
+#endif
     }
     multi_viewport_ = false;
   }
@@ -236,7 +249,7 @@ class FrameBuffer {
     scissor_set(scissor_rect);
   }
 
-  inline const GPUAttachment &depth_attachment() const
+  const GPUAttachment &depth_attachment() const
   {
     if (attachments_[GPU_FB_DEPTH_ATTACHMENT].tex) {
       return attachments_[GPU_FB_DEPTH_ATTACHMENT];

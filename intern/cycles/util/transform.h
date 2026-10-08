@@ -41,6 +41,13 @@ template<class T> ccl_device_inline float3 to_local(const T p, const T X, const 
   return make_float3(dot(p, X), dot(p, Y), dot(p, Z));
 }
 
+/* Packed float3 version */
+template<class T, class S>
+ccl_device_inline float3 to_local(const T p, const S X, const S Y, const S Z)
+{
+  return make_float3(dot(p, X), dot(p, Y), dot(p, Z));
+}
+
 template<class T>
 ccl_device_inline dual3 to_local(const dual<T> p, const T X, const T Y, const T Z)
 {
@@ -686,6 +693,39 @@ void transform_motion_decompose(DecomposedTransform *decomp,
 Transform transform_from_viewplane(BoundBox2D &viewplane);
 
 #endif
+
+/* Packed Transform.
+ *
+ * Transform type with no alignment requirements.
+ * It does not support any mathematical operations, only conversion to Transform. */
+
+struct PackedTransform {
+  PackedTransform() = default;
+
+  ccl_device_inline_method PackedTransform(const Transform a) : x(a.x), y(a.y), z(a.z) {}
+
+  ccl_device_inline_method PackedTransform operator=(const Transform a)
+  {
+    x = a.x;
+    y = a.y;
+    z = a.z;
+    return *this;
+  }
+
+  packed_float4 x, y, z;
+};
+static_assert(alignof(PackedTransform) == alignof(float),
+              "PackedTransform expected to have the same alignment as float");
+static_assert(sizeof(PackedTransform) == 48, "packed_float4 expected to be exactly 48 bytes");
+
+ccl_device_inline Transform make_transform(const PackedTransform packed_tfm)
+{
+  Transform tfm;
+  tfm.x = packed_tfm.x;
+  tfm.y = packed_tfm.y;
+  tfm.z = packed_tfm.z;
+  return tfm;
+}
 
 /* TODO: This can be removed when we know if no devices will require explicit
  * address space qualifiers for this case. */

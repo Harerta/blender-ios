@@ -27,23 +27,24 @@ static void node_declare(NodeDeclarationBuilder &b)
   b.use_custom_socket_order();
   b.allow_any_socket_order();
 
-  b.add_input<decl::Geometry>("Geometry")
+  b.add_input<decl::Geometry>("Geometry"_ustr)
       .is_default_link_socket()
       .description("Geometry to transform");
-  b.add_output<decl::Geometry>("Geometry").propagate_all().align_with_previous();
-  b.add_input<decl::Menu>("Mode")
+  b.add_output<decl::Geometry>("Geometry"_ustr).propagate_all_geometry().align_with_previous();
+  b.add_input<decl::Menu>("Mode"_ustr)
       .static_items(mode_items)
       .optional_label()
       .description("How the transformation is specified");
-  b.add_input<decl::Vector>("Translation")
+  b.add_input<decl::Vector>("Translation"_ustr)
       .subtype(PROP_TRANSLATION)
       .usage_by_single_menu(GEO_NODE_TRANSFORM_MODE_COMPONENTS);
-  b.add_input<decl::Rotation>("Rotation").usage_by_single_menu(GEO_NODE_TRANSFORM_MODE_COMPONENTS);
-  b.add_input<decl::Vector>("Scale")
+  b.add_input<decl::Rotation>("Rotation"_ustr)
+      .usage_by_single_menu(GEO_NODE_TRANSFORM_MODE_COMPONENTS);
+  b.add_input<decl::Vector>("Scale"_ustr)
       .default_value({1, 1, 1})
       .subtype(PROP_XYZ)
       .usage_by_single_menu(GEO_NODE_TRANSFORM_MODE_COMPONENTS);
-  b.add_input<decl::Matrix>("Transform").usage_by_single_menu(GEO_NODE_TRANSFORM_MODE_MATRIX);
+  b.add_input<decl::Matrix>("Transform"_ustr).usage_by_single_menu(GEO_NODE_TRANSFORM_MODE_MATRIX);
 }
 
 static bool use_translate(const math::Quaternion &rotation, const float3 scale)
@@ -107,13 +108,14 @@ static void node_geo_exec(GeoNodeExecParams params)
 static void register_node()
 {
   static bke::bNodeType ntype;
-  geo_node_type_base(&ntype, "GeometryNodeTransform", GEO_NODE_TRANSFORM_GEOMETRY);
+  geo_node_type_base(&ntype, "GeometryNodeTransform"_ustr, GEO_NODE_TRANSFORM_GEOMETRY);
   ntype.ui_name = "Transform Geometry";
   ntype.ui_description = "Translate, rotate or scale the geometry";
   ntype.enum_name_legacy = "TRANSFORM_GEOMETRY";
   ntype.nclass = NODE_CLASS_GEOMETRY;
   ntype.declare = node_declare;
   ntype.geometry_node_execute = node_geo_exec;
+  ntype.default_width = bke::NodeWidth::_160;
   bke::node_register_type(ntype);
 }
 NOD_REGISTER_NODE(register_node)

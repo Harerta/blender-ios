@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "BLI_bounds.hh"
-#include "BLI_color.hh"
+#include "BLI_color_types.hh"
+#include "BLI_math_color.h"
 #include "BLI_string_utf8.h"
 #include "BLI_vector.hh"
 
@@ -181,11 +182,11 @@ ExportStatus SVGExporter::export_scene(Scene &scene, StringRefNull filepath)
 
       IndexMaskMemory memory;
       if (selection_only) {
-        const Object &ob_eval = *DEG_get_evaluated(context_.depsgraph, params_.object);
-        if (ob_eval.type != OB_GREASE_PENCIL) {
+        const Object *ob_eval = DEG_get_evaluated(context_.depsgraph, params_.object);
+        if (!ob_eval || ob_eval->type != OB_GREASE_PENCIL) {
           return ExportStatus::InvalidActiveObjectType;
         }
-        const GreasePencil &grease_pencil = *id_cast<GreasePencil *>(ob_eval.data);
+        const GreasePencil &grease_pencil = *id_cast<GreasePencil *>(ob_eval->data);
         frames = IndexMask::from_predicate(frames, memory, [&](const int frame_number) {
           return this->is_selected_frame(grease_pencil, frame_number);
         });

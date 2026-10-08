@@ -20,7 +20,7 @@
 #include "CLG_log.h"
 
 #include <fmt/format.h>
-#include <fmt/ranges.h>
+#include "BLI_fmt.hh"
 
 namespace blender {
 
@@ -130,6 +130,14 @@ void Shader::print_log(Span<StringRefNull> sources,
     }
 
     const char *src_line = sources_combined.c_str();
+
+    std::string log_line_str(log_line, (line_end + 1) - log_line);
+    if (log_line_str.ends_with(" used uninitialized\n")) {
+      /* Mesa GLSL compiler warns about uninitialized variables are mostly false positive.
+       * Avoid noise. */
+      log_line = line_end + 1;
+      continue;
+    }
 
     /* Separate from previous block. */
     if (previous_location.source != log_item.cursor.source ||

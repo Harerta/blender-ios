@@ -14,8 +14,22 @@ set(INC
 set(INC_SYS
 )
 
+if(WITH_APPLE_CROSSPLATFORM)
+  set(FSMENU_SRC
+    fsmenu_system.mm
+  )
+else()
+  set(FSMENU_SRC
+    fsmenu_system.cc
+  )
+endif()
+
+
+
 set(SRC
   asset_catalog_tree_view.cc
+  file_banner.cc
+  file_banner_remote_assets.cc
   file_context.cc
   file_draw.cc
   file_indexer.cc
@@ -27,6 +41,7 @@ set(SRC
   filelist/filelist_readjob.cc
   filelist/filelist_readjob_asset_library_all.cc
   filelist/filelist_readjob_asset_library_current_file.cc
+  filelist/filelist_readjob_asset_library_essentials.cc
   filelist/filelist_readjob_asset_library_on_disk.cc
   filelist/filelist_readjob_asset_library_remote.cc
   filelist/filelist_readjob_common.cc
@@ -37,8 +52,10 @@ set(SRC
   filesel.cc
   folder_history.cc
   fsmenu.cc
+  ${FSMENU_SRC}
   space_file.cc
 
+  file_banner.hh
   file_indexer.hh
   file_intern.hh
   filelist.hh
@@ -91,10 +108,6 @@ else()
   list(APPEND LIB
     bf_editor_datafiles
   )
-endif()
-
-if(WITH_IMAGE_OPENEXR)
-  add_definitions(-DWITH_IMAGE_OPENEXR)
 endif()
 
 if(WITH_IMAGE_OPENJPEG)

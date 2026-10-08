@@ -48,6 +48,7 @@ set(SRC
   intern/GHOST_EventKey.hh
   intern/GHOST_EventManager.hh
   intern/GHOST_EventString.hh
+  intern/GHOST_EventTouch.hh
   intern/GHOST_EventTrackpad.hh
   intern/GHOST_EventWheel.hh
   intern/GHOST_ModifierKeys.hh
@@ -70,6 +71,14 @@ set(LIB
   PRIVATE bf::imbuf
   PRIVATE bf::intern::clog
 )
+
+if(WITH_APPLE_CROSSPLATFORM)
+  add_definitions(-DWITH_APPLE_CROSSPLATFORM)
+endif()
+
+if(WITH_METAL_BACKEND)
+  add_definitions(-DWITH_METAL_BACKEND)
+endif()
 
 if(WITH_INPUT_IME)
   add_definitions(-DWITH_INPUT_IME)
@@ -151,21 +160,45 @@ elseif(WITH_GHOST_SDL)
     bf::dependencies::optional::sdl
   )
 elseif(APPLE AND NOT WITH_GHOST_X11)
-  list(APPEND SRC
-    intern/GHOST_SystemCocoa.mm
-    intern/GHOST_WindowCocoa.mm
+ 
+  if(WITH_APPLE_CROSSPLATFORM)
+    message(STATUS "Configure Ghost for Apple Cross platform: iOS")
+    
+    if(APPLE_TARGET_IOS)
+      # GHOST modules for iPadOS.
+      list(APPEND SRC
+        intern/GHOST_SystemIOS.hh
+        intern/GHOST_WindowIOS.hh
+        intern/GHOST_FilePickerIOS.hh
+        intern/GHOST_WindowIOS_Internal.h
 
-    intern/GHOST_SystemCocoa.hh
-    intern/GHOST_WindowCocoa.hh
-    intern/GHOST_WindowViewCocoa.hh
-  )
+        intern/GHOST_SystemIOS.mm
+        intern/GHOST_WindowIOS.mm
+        intern/GHOST_KeyboardIOS.mm
+        intern/GHOST_FilePickerIOS.mm
 
-  if(WITH_INPUT_NDOF)
+        intern/GHOST_ContextIOS.mm
+        intern/GHOST_ContextIOS.hh
+      )
+    endif()
+  else()
+    # MacOS
     list(APPEND SRC
-      intern/GHOST_NDOFManagerCocoa.mm
+      intern/GHOST_SystemCocoa.mm
+      intern/GHOST_WindowCocoa.mm
 
-      intern/GHOST_NDOFManagerCocoa.hh
+      intern/GHOST_SystemCocoa.hh
+      intern/GHOST_WindowCocoa.hh
+      intern/GHOST_WindowViewCocoa.hh
     )
+
+    if(WITH_INPUT_NDOF)
+      list(APPEND SRC
+        intern/GHOST_NDOFManagerCocoa.mm
+
+        intern/GHOST_NDOFManagerCocoa.hh
+      )
+    endif()
   endif()
 
 elseif(WITH_GHOST_X11 OR WITH_GHOST_WAYLAND)
@@ -365,6 +398,10 @@ elseif(WITH_GHOST_X11 OR WITH_GHOST_WAYLAND)
     generate_protocol_bindings(
       "${WAYLAND_PROTOCOLS_DIR}/stable/viewporter/viewporter.xml"
     )
+    # Color management (HDR properties)
+    generate_protocol_bindings(
+      "${WAYLAND_PROTOCOLS_DIR}/staging/color-management/color-management-v1.xml"
+    )
     # Pointer-constraints.
     generate_protocol_bindings(
       "${WAYLAND_PROTOCOLS_DIR}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml"
@@ -415,11 +452,6 @@ elseif(WITH_GHOST_X11 OR WITH_GHOST_WAYLAND)
       intern/GHOST_NDOFManagerUnix.hh
     )
   endif()
-
-  if(NOT WITH_INSTALL_PORTABLE)
-    add_definitions(-DPREFIX="${CMAKE_INSTALL_PREFIX}")
-  endif()
-
 
 elseif(WIN32)
   # # Warnings as errors, this is too strict!
@@ -481,7 +513,7 @@ if(UNIX AND NOT APPLE)
   endif()
 endif()
 
-if(APPLE)
+if(APPLE AND NOT WITH_APPLE_CROSSPLATFORM)
   if(WITH_METAL_BACKEND)
     list(APPEND SRC
       intern/GHOST_ContextMTL.mm
@@ -503,8 +535,31 @@ elseif(UNIX)
     intern/GHOST_SystemPathsUnix.hh
   )
 
+  # System-wide (non-portable) installs locate architecture-dependent libraries under `lib`
+  # (typically `/usr/lib`), following the FHS convention - alongside `share/`.
   if(NOT WITH_INSTALL_PORTABLE)
     add_definitions(-DPREFIX="${CMAKE_INSTALL_PREFIX}")
+
+    # NOTE: A Python module is itself a library: its wrapper libraries are bundled in the package
+    # beside the add-on, so it doesn't need a separate system libraries path.
+    if(NOT WITH_PYTHON_MODULE)
+      # The standard variable for this path is `CMAKE_INSTALL_LIBDIR` (typically `lib` or `lib64`).
+      # It isn't set by default, but systems that build packages may define it.
+      #
+      # NOTE: `include(GNUInstallDirs)` could auto-detect this path.
+      # Since default builds aren't system-wide, leave it to the
+      # package-build scripts to pass in the correct directory.
+      set(_lib "lib")
+      if(DEFINED CMAKE_INSTALL_LIBDIR)
+        if(CMAKE_INSTALL_LIBDIR)
+          set(_lib "${CMAKE_INSTALL_LIBDIR}")
+        endif()
+      endif()
+
+      add_definitions(-DBLENDER_INSTALL_LIBDIR="${_lib}")
+
+      unset(_lib)
+    endif()
   endif()
 
 elseif(WIN32)

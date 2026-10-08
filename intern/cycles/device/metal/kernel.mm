@@ -250,8 +250,8 @@ bool ShaderCache::should_load_kernel(DeviceKernel device_kernel,
     return false;
   }
 
-  if (device_kernel == DEVICE_KERNEL_INTEGRATOR_MEGAKERNEL) {
-    /* Skip megakernel. */
+  if (!device_kernel_has_gpu_function(device_kernel)) {
+    /* Skip megakernel and other markers without a GPU function. */
     return false;
   }
 
@@ -262,9 +262,9 @@ bool ShaderCache::should_load_kernel(DeviceKernel device_kernel,
     }
   }
 
-  if (device_kernel == DEVICE_KERNEL_INTEGRATOR_SHADE_SURFACE_MNEE) {
+  if (device_kernel == DEVICE_KERNEL_INTEGRATOR_INTERSECT_MNEE) {
     if ((device->kernel_features & KERNEL_FEATURE_MNEE) == 0) {
-      /* Skip shade_surface_mnee kernel if the scene doesn't require it. */
+      /* Skip the MNEE kernel if the scene doesn't require it. */
       return false;
     }
   }
@@ -310,9 +310,19 @@ void ShaderCache::load_kernel(DeviceKernel device_kernel,
        * limit. */
       int max_mtlcompiler_threads = 2;
 
-#  if defined(MAC_OS_VERSION_13_3)
+#  ifndef WITH_APPLE_CROSSPLATFORM
+#    if defined(MAC_OS_VERSION_13_3)
       if (@available(macOS 13.3, *)) {
         /* Subtract one to avoid contention with the real-time GPU module. */
+        max_mtlcompiler_threads = max(2,
+                                      int([mtlDevice maximumConcurrentCompilationTaskCount]) - 1);
+      }
+#    endif
+#  else
+      /* iOS: Query the device for the maximum concurrent compilation tasks.
+       * Subtract one to avoid contention, and cap to limit peak memory (jetsam risk).
+       * Note this property is only exposed on iOS 26.0+, unlike macOS where it landed in 13.3. */
+      if (@available(iOS 26.0, *)) {
         max_mtlcompiler_threads = max(2,
                                       int([mtlDevice maximumConcurrentCompilationTaskCount]) - 1);
       }
@@ -401,6 +411,14 @@ MetalKernelPipeline *ShaderCache::get_best_pipeline(DeviceKernel kernel, const M
 
 bool MetalKernelPipeline::should_use_binary_archive() const
 {
+#  ifdef WITH_APPLE_CROSSPLATFORM
+  /* Enable binary archives on iOS to avoid recompiling shaders every launch.
+   * Intersection functions with linked functions are still unsupported. */
+  if (use_metalrt && device_kernel_has_intersection(device_kernel)) {
+    return false;
+  }
+  return (pso_type == PSO_GENERIC);
+#  endif
   /* Issues with binary archives in older macOS versions. */
   if (@available(macOS 15.4, *)) {
     if (auto *str = getenv("CYCLES_METAL_DISABLE_BINARY_ARCHIVES")) {
@@ -441,6 +459,7 @@ static MTLFunctionConstantValues *GetConstantValues(const KernelData *data = nul
 
   MTLDataType MTLDataType_int = MTLDataTypeInt;
   MTLDataType MTLDataType_float = MTLDataTypeFloat;
+  MTLDataType MTLDataType_float2 = MTLDataTypeFloat2;
   MTLDataType MTLDataType_float4 = MTLDataTypeFloat4;
   KernelData zero_data = {0};
   if (!data) {
@@ -472,7 +491,8 @@ void MetalDispatchPipeline::free_intersection_function_tables()
 {
   for (int table = 0; table < METALRT_TABLE_NUM; table++) {
     if (intersection_func_table[table]) {
-      [intersection_func_table[table] release];
+      /* Add the table to the delayed free list of the device that created it. */
+      metal_device->metal_mem_free(intersection_func_table[table]);
       intersection_func_table[table] = nil;
     }
   }
@@ -485,6 +505,7 @@ MetalDispatchPipeline::~MetalDispatchPipeline()
 
 bool MetalDispatchPipeline::update(MetalDevice *metal_device, DeviceKernel kernel)
 {
+  this->metal_device = metal_device;
   const MetalKernelPipeline *best_pipeline = MetalDeviceKernels::get_best_pipeline(metal_device,
                                                                                    kernel);
   if (!best_pipeline) {
@@ -519,6 +540,15 @@ bool MetalDispatchPipeline::update(MetalDevice *metal_device, DeviceKernel kerne
               functionHandleWithFunction:best_pipeline->table_functions[table][i]];
           [intersection_func_table[table] setFunction:handle atIndex:i];
         }
+
+        /* Bind launch_params into the intersection function table once, when the table is
+         * (re)created. launch_params_buffer is allocated once and never moves, and the binding
+         * persists on the table, so there's no need to rebind it on every dispatch. */
+        [intersection_func_table[table] setBuffer:metal_device->launch_params_buffer
+                                           offset:0
+                                          atIndex:1];
+
+        metal_device->metal_mem_alloc(intersection_func_table[table]);
       }
     }
   }
@@ -793,6 +823,25 @@ void MetalKernelPipeline::compile()
 
     do_compilation();
   }
+
+#  ifdef WITH_APPLE_CROSSPLATFORM
+  /* iOS: Retry compilation after jetsam. The Metal compiler service can be killed by the OS
+   * under memory pressure, producing XPC_ERROR_CONNECTION_INVALID. Wait and retry to give the
+   * system time to reclaim memory and restart the compiler service. */
+  if (pipeline == nil && ShaderCache::running) {
+    const int max_retries = 2;
+    for (int retry = 0; retry < max_retries && pipeline == nil && ShaderCache::running; retry++) {
+      metal_printf("Retrying %s compilation (attempt %d/%d) after error...",
+                   device_kernel_as_string(device_kernel),
+                   retry + 1,
+                   max_retries);
+      std::this_thread::sleep_for(std::chrono::seconds(3));
+      recreate_archive = false;
+      pipelineOptions = MTLPipelineOptionNone;
+      do_compilation();
+    }
+  }
+#  endif
 
   double duration = time_dt() - starttime;
 

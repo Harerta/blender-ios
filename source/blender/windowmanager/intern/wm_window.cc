@@ -58,6 +58,8 @@
 #include "BKE_wm_runtime.hh"
 #include "BKE_workspace.hh"
 
+#include "PRF_profile.hh"
+
 #include "RNA_access.hh"
 #include "RNA_enum_types.hh"
 
@@ -67,6 +69,7 @@
 #include "wm.hh"
 #include "wm_draw.hh"
 #include "wm_event_system.hh"
+#include "wm_event_types.hh"
 #include "wm_files.hh"
 #include "wm_window.hh"
 #include "wm_window_private.hh"
@@ -132,7 +135,7 @@ ENUM_OPERATORS(eWinOverrideFlag)
  * Override defaults or startup file when #eWinOverrideFlag is set.
  * These values are typically set by command line arguments.
  */
-static struct WMInitStruct {
+static struct wmInitStruct {
   /**
    * Window geometry:
    * - Defaults to the main screen-size.
@@ -1007,9 +1010,7 @@ static void wm_window_ghostwindow_add(wmWindowManager *wm,
 
   GPUBackendType gpu_backend = GPU_backend_type_selection_get();
   gpu_settings.context_type = wm_ghost_drawing_context_type(gpu_backend);
-  gpu_settings.preferred_device.index = U.gpu_preferred_index;
-  gpu_settings.preferred_device.vendor_id = U.gpu_preferred_vendor_id;
-  gpu_settings.preferred_device.device_id = U.gpu_preferred_device_id;
+  gpu_settings.preferred_device = GPU_backend_preferred_device_get();
   if (GPU_backend_vsync_is_overridden()) {
     gpu_settings.flags |= GHOST_gpuVSyncIsOverridden;
     gpu_settings.vsync = GHOST_TVSyncModes(GPU_backend_vsync_get());
@@ -1091,7 +1092,9 @@ static void wm_window_ghostwindow_add(wmWindowManager *wm,
     GPU_render_end();
   }
   else {
-    wm_window_set_drawable(wm, prev_windrawable, false);
+    if (prev_windrawable != nullptr) {
+      wm_window_set_drawable(wm, prev_windrawable, false);
+    }
   }
 }
 
@@ -1437,6 +1440,19 @@ wmWindow *WM_window_open(bContext *C,
 
 wmWindow *WM_window_open_temp(bContext *C, const char *title, int space_type, bool dialog)
 {
+#ifdef WITH_APPLE_CROSSPLATFORM
+  /* iOS has no window controls (close/minimize/resize), so opening a new OS window
+   * creates an unclosable fullscreen surface. Use fullscreen overlay instead,
+   * which provides a built-in "Back to Previous" button. */
+  ScrArea *area = ED_screen_temp_space_open(
+      C, title, eSpace_Type(space_type), USER_TEMP_SPACE_DISPLAY_FULLSCREEN, dialog);
+  if (area) {
+    /* Return the current window so callers see success. Context has been updated. */
+    return CTX_wm_window(C);
+  }
+  return nullptr;
+#endif
+
   rcti rect;
   WM_window_dpi_set_userdef(CTX_wm_window(C));
   eWindowAlignment align;
@@ -1488,6 +1504,11 @@ wmOperatorStatus wm_window_close_exec(bContext *C, wmOperator * /*op*/)
 
 wmOperatorStatus wm_window_new_exec(bContext *C, wmOperator *op)
 {
+#ifdef WITH_APPLE_CROSSPLATFORM
+  BKE_report(op->reports, RPT_WARNING, "Multiple windows are not supported on this platform");
+  return OPERATOR_CANCELLED;
+#endif
+
   wmWindow *win_src = CTX_wm_window(C);
   ScrArea *area = BKE_screen_find_big_area(CTX_wm_screen(C), SPACE_TYPE_ANY, 0);
   const rcti window_rect = {
@@ -1517,6 +1538,11 @@ wmOperatorStatus wm_window_new_exec(bContext *C, wmOperator *op)
 
 wmOperatorStatus wm_window_new_main_exec(bContext *C, wmOperator *op)
 {
+#ifdef WITH_APPLE_CROSSPLATFORM
+  BKE_report(op->reports, RPT_WARNING, "Multiple windows are not supported on this platform");
+  return OPERATOR_CANCELLED;
+#endif
+
   wmWindow *win_src = CTX_wm_window(C);
 
   bool ok = (wm_window_copy_test(C, win_src, true, false) != nullptr);
@@ -1949,12 +1975,17 @@ static bool ghost_event_proc(const GHOST_IEvent *ghost_event, GHOST_TUserDataPtr
           WM_event_add_notifier_ex(wm, win, NC_WINDOW | NA_EDITED, nullptr);
 
 #if defined(__APPLE__) || defined(WIN32)
-          /* MACOS and WIN32 don't return to the main-loop while resize. */
+#  ifndef WITH_APPLE_CROSSPLATFORM
+          /* MACOS and WIN32 don't return to the main-loop while resize.
+           * On iOS, resize events arrive through the normal event queue inside
+           * drawInMTKView, so nested drawing here would cause framebuffer conflicts
+           * with in-flight Metal command buffers (e.g. during Cycles render). */
           int dummy_sleep_ms = 0;
           wm_window_timers_process(C, &dummy_sleep_ms);
           wm_event_do_handlers(C);
           wm_event_do_notifiers(C);
           wm_draw_update(C);
+#  endif
 #endif
         }
       }
@@ -1989,6 +2020,75 @@ static bool ghost_event_proc(const GHOST_IEvent *ghost_event, GHOST_TUserDataPtr
       }
       break;
     }
+
+    case GHOST_kEventNativeFileDialogResult: {
+      const char *filepath = static_cast<const char *>(data);
+
+      /* Find the active fileselect handler on this window (or any window). */
+      wmEventHandler_Op *fileselect_handler = nullptr;
+      wmWindow *handler_win = nullptr;
+
+      for (wmWindow &search_win : wm->windows) {
+        for (wmEventHandler &handler_base : search_win.runtime->modalhandlers) {
+          if (handler_base.type == WM_HANDLER_TYPE_OP) {
+            wmEventHandler_Op *handler = reinterpret_cast<wmEventHandler_Op *>(&handler_base);
+            if (handler->is_fileselect && handler->op) {
+              fileselect_handler = handler;
+              handler_win = &search_win;
+              break;
+            }
+          }
+        }
+        if (fileselect_handler) {
+          break;
+        }
+      }
+
+      if (fileselect_handler && filepath && filepath[0] != '\0') {
+        /* Set the filepath on the operator's RNA properties. */
+        PropertyRNA *prop = RNA_struct_find_property(fileselect_handler->op->ptr, "filepath");
+        if (prop) {
+          RNA_property_string_set(fileselect_handler->op->ptr, prop, filepath);
+        }
+
+        /* Also set directory and filename if available. */
+        char dir[1024] = "";
+        char file[256] = "";
+        {
+          /* Extract directory and filename from the full path. */
+          const char *last_sep = strrchr(filepath, '/');
+          if (last_sep) {
+            size_t dir_len = (size_t)(last_sep - filepath + 1);
+            if (dir_len >= sizeof(dir)) {
+              dir_len = sizeof(dir) - 1;
+            }
+            memcpy(dir, filepath, dir_len);
+            dir[dir_len] = '\0';
+            STRNCPY(file, last_sep + 1);
+          }
+        }
+
+        PropertyRNA *prop_dir = RNA_struct_find_property(fileselect_handler->op->ptr,
+                                                          "directory");
+        if (prop_dir && dir[0] != '\0') {
+          RNA_property_string_set(fileselect_handler->op->ptr, prop_dir, dir);
+        }
+        PropertyRNA *prop_file = RNA_struct_find_property(fileselect_handler->op->ptr,
+                                                           "filename");
+        if (prop_file && file[0] != '\0') {
+          RNA_property_string_set(fileselect_handler->op->ptr, prop_file, file);
+        }
+
+        /* Fire the exec event — the existing handler teardown path will run the operator. */
+        WM_event_fileselect_event(wm, fileselect_handler->op, EVT_FILESELECT_EXEC);
+      }
+      else if (fileselect_handler) {
+        /* User cancelled — fire cancel event. */
+        WM_event_fileselect_event(wm, fileselect_handler->op, EVT_FILESELECT_EXTERNAL_CANCEL);
+      }
+      break;
+    }
+
     case GHOST_kEventDraggingDropDone: {
       const GHOST_TEventDragnDropData *ddd = static_cast<const GHOST_TEventDragnDropData *>(data);
 
@@ -2195,6 +2295,7 @@ static bool wm_window_timers_process(const bContext *C, int *sleep_us_p)
 
 void wm_window_events_process(const bContext *C)
 {
+  PRF_scope(ProfileCategory::Core);
   BLI_assert(BLI_thread_is_main());
   GPU_render_begin();
 
@@ -2825,12 +2926,12 @@ bool WM_clipboard_image_set_byte_buffer(ImBuf *ibuf)
   if (G.background) {
     return false;
   }
-  if (ibuf->byte_buffer.data == nullptr) {
+  if (ibuf->byte_data() == nullptr) {
     return false;
   }
 
   bool success = bool(g_system->putClipboardImage(
-      reinterpret_cast<uint *>(ibuf->byte_buffer.data), ibuf->x, ibuf->y));
+      reinterpret_cast<uint *>(ibuf->byte_data_for_write()), ibuf->x, ibuf->y));
 
   return success;
 }
@@ -3071,8 +3172,18 @@ void WM_cursor_warp(wmWindow *win, int x, int y)
   win->runtime->eventstate->xy[1] = oldy;
 }
 
-uint WM_cursor_preferred_logical_size()
+uint WM_cursor_preferred_logical_size(const bool hardware_cursor)
 {
+  if (OS_MAC) {
+    if (hardware_cursor) {
+      /* On macOS 21 logical pixels is the expected "default", so follow this here.
+       *
+       * NOTE(@ideasman42): visually Blender's cursors do look bigger then the systems
+       * when set to #WM_CURSOR_DEFAULT_LOGICAL_SIZE, so use macOS's default size. */
+      return 21;
+    }
+  }
+
   return g_system->getCursorPreferredLogicalSize();
 }
 
@@ -3476,9 +3587,7 @@ GHOST_IContext *WM_system_gpu_context_create()
   if (G.debug & G_DEBUG_GPU) {
     gpu_settings.flags |= GHOST_gpuDebugContext;
   }
-  gpu_settings.preferred_device.index = U.gpu_preferred_index;
-  gpu_settings.preferred_device.vendor_id = U.gpu_preferred_vendor_id;
-  gpu_settings.preferred_device.device_id = U.gpu_preferred_device_id;
+  gpu_settings.preferred_device = GPU_backend_preferred_device_get();
   if (GPU_backend_vsync_is_overridden()) {
     gpu_settings.flags |= GHOST_gpuVSyncIsOverridden;
     gpu_settings.vsync = GHOST_TVSyncModes(GPU_backend_vsync_get());

@@ -1,0 +1,103 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-new, 'claude/**']
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+
+      - name: Select Xcode 26
+        run: |
+          # The app targets iOS/iPadOS 26.0, which needs the iOS 26 SDK.
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Fetch Blender LFS data
+        run: |
+          # startup.blend, icons, brushes etc. are LFS objects served from
+          # projects.blender.org (see .lfsconfig). Test data is not needed.
+          git lfs install
+          git lfs pull --exclude="tests/**" || echo "::warning::some LFS objects failed to download"
+          # List anything still a pointer (shown with '-' instead of '*').
+          git lfs ls-files --exclude="tests/**" | grep ' - ' || true
+          ls -l release/datafiles/startup.blend
+
+      - name: Fetch prebuilt libs
+        run: |
+          git lfs install
+          # 'update = none' in .gitmodules, so --checkout is required
+          GIT_LFS_SKIP_SMUDGE=0 git submodule update --init --checkout --depth 1 lib/ios_arm64 lib/macos_arm64
+          ls lib/ios_arm64/python/lib/libpython3.11.a
+          df -h .
+
+      - name: Configure
+        run: |
+          set -o pipefail
+          brew install cmake || true
+          IOS_LIBDIR="$PWD/lib/ios_arm64"
+          IOS_SDK_ROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+          IOS_DEV_ROOT="$(dirname "$IOS_SDK_ROOT")"
+          cmake -S . -B build_ios -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DWITH_APPLE_CROSSPLATFORM=ON \
+            -DAPPLE_TARGET_DEVICE=ios \
+            -DCMAKE_FIND_ROOT_PATH="$IOS_DEV_ROOT;$(dirname "$IOS_DEV_ROOT");$IOS_LIBDIR" 2>&1 | tee configure.log
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cd build_ios
+          xcodebuild -project Blender.xcodeproj -scheme blender -configuration Release \
+            -sdk iphoneos -jobs "$(sysctl -n hw.ncpu)" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee ../build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" ../build.log
+
+      - name: Error summary
+        if: failure()
+        run: |
+          grep -nE "error:|fatal error|CMake Error" configure.log build.log 2>/dev/null | sort -u | head -80 > errors.txt || true
+          cat errors.txt
+          df -h .
+
+      - name: Package IPA
+        run: |
+          APP="$(find build_ios -name '*.app' -path '*Release*' -type d -prune | head -1)"
+          echo "App: $APP"
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry blender.ipa Payload
+          ls -lh blender.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blender-ipa
+          path: blender.ipa
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-logs
+          path: |
+            configure.log
+            build.log
+            errors.txt
+          retention-days: 7
+          if-no-files-found: ignore
