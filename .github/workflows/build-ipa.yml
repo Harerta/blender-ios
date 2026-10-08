@@ -3,7 +3,7 @@ name: Build unsigned IPA
 on:
   workflow_dispatch:
   push:
-    branches: [ios-new]
+    branches: [ios-new, 'claude/**']
 
 concurrency:
   group: build-ipa-${{ github.ref }}
@@ -20,6 +20,24 @@ jobs:
           lfs: false
           submodules: false
 
+      - name: Select Xcode 26
+        run: |
+          # The app targets iOS/iPadOS 26.0, which needs the iOS 26 SDK.
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Fetch Blender LFS data
+        run: |
+          # startup.blend, icons, brushes etc. are LFS objects served from
+          # projects.blender.org (see .lfsconfig). Test data is not needed.
+          git lfs install
+          git lfs pull --exclude="tests/**" || echo "::warning::some LFS objects failed to download"
+          # List anything still a pointer (shown with '-' instead of '*').
+          git lfs ls-files --exclude="tests/**" | grep ' - ' || true
+          ls -l release/datafiles/startup.blend
+
       - name: Fetch prebuilt libs
         run: |
           git lfs install
@@ -30,6 +48,7 @@ jobs:
 
       - name: Configure
         run: |
+          set -o pipefail
           brew install cmake || true
           IOS_LIBDIR="$PWD/lib/ios_arm64"
           IOS_SDK_ROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
